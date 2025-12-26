@@ -253,4 +253,3 @@ assert totals['wheel_id'].is_unique, "Duplicate 'total' rows detected for same w
 7. **Trading Calendar Utilities** (new)
 8. **Entry Candidate Selection** (new wrapper)
 9. **Wheel Engine** (existing - frozen)
-10. **Single Wheel Wrapper** (new)
