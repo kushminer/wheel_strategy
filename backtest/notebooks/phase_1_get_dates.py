@@ -35,9 +35,9 @@ def fetch_historical_close_prices(
     
     return data['Close']
 
-def calculate_technical_indicators(
+def generate_dict_technical_indicators(
     historic_close_data: pd.DataFrame,
-    technical_filter_configs: dict = None,
+    configs_technical_indicators: dict = None,
     window: int = 20,
     std_dev: float = 2.0,
     dropna: bool = True,
@@ -48,16 +48,16 @@ def calculate_technical_indicators(
     
     Args:
         historic_close_data: DataFrame with price data, each column represents the close price of a symbol
-        technical_filter_configs: Dictionary of configurations. If provided, returns nested dict structure.
-                                 Format: {'config_name': {'window': int, 'std_dev': float}, ...}
-                                 If None, uses single config with window/std_dev parameters.
-        window: Rolling window size for SMA and standard deviation (default: 20, used if technical_filter_configs is None)
-        std_dev: Number of standard deviations for Bollinger Bands (default: 2.0, used if technical_filter_configs is None)
+        configs_technical_indicators: Dictionary of configurations. If provided, returns nested dict structure.
+                                      Format: {'config_name': {'window': int, 'std_dev': float}, ...}
+                                      If None, uses single config with window/std_dev parameters.
+        window: Rolling window size for SMA and standard deviation (default: 20, used if configs_technical_indicators is None)
+        std_dev: Number of standard deviations for Bollinger Bands (default: 2.0, used if configs_technical_indicators is None)
         dropna: Whether to drop rows with NaN values (default: True)
         print_sample: Whether to print sample results (default: False)
     
     Returns:
-        If technical_filter_configs is provided:
+        If configs_technical_indicators is provided:
             Nested dictionary: {config_name: {symbol: DataFrame}}
         Otherwise:
             Dictionary: {symbol: DataFrame}
@@ -100,9 +100,9 @@ def calculate_technical_indicators(
         return result_dict
     
     # If configs provided, calculate for each config and return nested structure
-    if technical_filter_configs is not None:
+    if configs_technical_indicators is not None:
         daily_tech_indicators_dict = {}
-        for config_name, params in technical_filter_configs.items():
+        for config_name, params in configs_technical_indicators.items():
             daily_tech_indicators_dict[config_name] = _calculate_single_config(
                 historic_close_data,
                 window=params['window'],
@@ -128,10 +128,10 @@ def calculate_technical_indicators(
         result_dict = _calculate_single_config(historic_close_data, window, std_dev, dropna)
         return result_dict
 
-def filter_daily_tickers_by_technical(
+def generate_dict_technical_indicator_filter(
     daily_tech_indicators_dict: dict,
     historic_close_data: pd.DataFrame,
-    filter_configs: dict = None
+    configs_technical_indicator_filter: dict = None
 ) -> dict:
     """
     Filter daily tickers based on technical indicator conditions for multiple configurations.
@@ -141,8 +141,8 @@ def filter_daily_tickers_by_technical(
         daily_tech_indicators_dict: Nested dictionary of technical indicators 
                                     (key=tech_config_name, value={symbol: DataFrame})
         historic_close_data: DataFrame with close prices for each symbol
-        filter_configs: Dictionary mapping filter config names to filter condition functions.
-                       If None, uses default configs:
+        configs_technical_indicator_filter: Dictionary mapping filter config names to filter condition functions.
+                                            If None, uses default configs:
                        - config_1: close <= bb_upper
                        - config_2: close <= bb_lower
                        - config_3: (close.shift(-1) <= bb_lower.shift(-1)) & (close >= bb_lower) - bounce from lower band
@@ -155,8 +155,8 @@ def filter_daily_tickers_by_technical(
         - Values: filtered DataFrames
     """
     # Default filter configurations
-    if filter_configs is None:
-        filter_configs = {
+    if configs_technical_indicator_filter is None:
+        configs_technical_indicator_filter = {
             'config_1': lambda df: df['close'] <= df['bb_upper'],
             'config_2': lambda df: df['close'] <= df['bb_lower'],
             'config_3': lambda df: (df['close'].shift(-1) <= df['bb_lower'].shift(-1)) & (df['close'] >= df['bb_lower']),
@@ -169,7 +169,7 @@ def filter_daily_tickers_by_technical(
         filtered_daily_tickers[tech_config_name] = {}
         
         # Apply each filter config to this technical indicator config
-        for filter_config_name, filter_func in filter_configs.items():
+        for filter_config_name, filter_func in configs_technical_indicator_filter.items():
             filtered_daily_tickers[tech_config_name][filter_config_name] = {}
             
             # Loop through each symbol in this technical indicator configuration
