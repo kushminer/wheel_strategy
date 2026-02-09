@@ -1,0 +1,14 @@
+# Exclude from Docker build context
+
+*.ipynb
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+.git/
+.gitignore
+.DS_Store
+*.md
+.venv/
+venv/
+.python-version

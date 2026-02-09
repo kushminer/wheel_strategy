@@ -26,13 +26,14 @@ todos:
   - id: validation
     content: Add data model assertions and testing cells
     status: completed
+isProject: false
 ---
 
 # Wheel Strategy v5 - Date Range + Multi-Ticker Scheduler
 
 ## Overview
 
-Copy [`wheel_version_4_covered_call.ipynb`](notebooks/wheel_version_4_covered_call.ipynb) to a new `wheel_version_5_scheduler.ipynb` and add a scheduler layer that iterates over trading dates and symbols, launching wheel instances for each qualifying entry. The v4 wheel engine remains frozen - only orchestration changes.
+Copy `[wheel_version_4_covered_call.ipynb](notebooks/wheel_version_4_covered_call.ipynb)` to a new `wheel_version_5_scheduler.ipynb` and add a scheduler layer that iterates over trading dates and symbols, launching wheel instances for each qualifying entry. The v4 wheel engine remains frozen - only orchestration changes.
 
 ## Architecture
 
@@ -95,8 +96,6 @@ SCHEDULER_CONFIG = {
 }
 ```
 
-
-
 ### Step 3: Trading Calendar Utilities
 
 Add helper using the already-imported `pandas_market_calendars`:
@@ -119,13 +118,13 @@ Create `get_entry_candidates(symbol, trade_date, config)` that:
 3. Applies delta/DTE/liquidity filters
 4. **Sorts candidates deterministically** by `['expiration', 'strike', 'symbol']` for reproducibility
 5. Returns DataFrame of qualifying CSP candidates (no ranking, no capital constraints)
+
 ```python
 # Deterministic ordering with stable tie-breaker prevents row-order variance
 entry_candidates = entry_candidates.sort_values(
     ['expiration', 'strike', 'symbol']
 ).reset_index(drop=True)
 ```
-
 
 This encapsulates existing cells 9-23 into a reusable function.
 
@@ -137,7 +136,7 @@ Create `run_single_wheel(candidate, config, cc_config, wheel_id)` that:
 2. If assigned, calls existing `handle_assignment()`, `fetch_option_chain_for_cc()`, `select_covered_call()`, `backtest_covered_call()`
 3. Calls `calculate_wheel_pnl()` to aggregate results
 4. Returns standardized exit records with `wheel_id`, `phase`, `state` fields
-5. **Stamps each result with `execution_version`** for downstream comparison
+5. **Stamps each result with `execution_version**` for downstream comparison
 
 **Return type contract:** `run_single_wheel(...) -> List[dict]`
 
@@ -199,7 +198,7 @@ def run_v5_scheduler(CONFIG, CC_CONFIG, SCHEDULER_CONFIG):
     return pd.concat([pd.DataFrame([r]) for r in all_wheel_results], ignore_index=True)
 ```
 
-**Logging Guard Pattern**: All print statements wrapped with `if log_info:`. Valid `log_level` values: `'INFO'` (default) or `'QUIET'`.**Note on `scheduler_seed`**: Reserved for v6 ranking/capital allocation; v5 is deterministic without it (determinism comes from trading calendar order + candidate sorting + execution_seed in wheel engine).
+**Logging Guard Pattern**: All print statements wrapped with `if log_info:`. Valid `log_level` values: `'INFO'` (default) or `'QUIET'`.**Note on `scheduler_seed**`: Reserved for v6 ranking/capital allocation; v5 is deterministic without it (determinism comes from trading calendar order + candidate sorting + execution_seed in wheel engine).
 
 ### Step 7: Aggregation Layer
 
@@ -216,8 +215,6 @@ def aggregate_v5_results(df):
         'max_drawdown_proxy': totals['pnl'].min(),
     }
 ```
-
-
 
 ### Step 8: Data Model Assertions
 
@@ -240,8 +237,6 @@ totals = exits_df[exits_df['phase'] == 'total']
 assert totals['wheel_id'].is_unique, "Duplicate 'total' rows detected for same wheel_id"
 ```
 
-
-
 ## Notebook Structure (Final)
 
 1. **Imports** (existing)
@@ -252,3 +247,4 @@ assert totals['wheel_id'].is_unique, "Duplicate 'total' rows detected for same w
 6. **Helper Functions** (existing - frozen)
 7. **Trading Calendar Utilities** (new)
 8. **Entry Candidate Selection** (new wrapper)
+
