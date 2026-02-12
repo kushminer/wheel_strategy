@@ -44,7 +44,7 @@ class EquityFilter:
     Filters equities based on technical criteria.
 
     Filter Rules:
-    1. SMA(8) < SMA(20) < SMA(50) < current_price < BB_upper(50, 1std)
+    1. current_price > SMA(8), SMA(20), SMA(50), and BB_upper(50, 1std)
     2. SMA(50) has been rising for last 3 days
     3. RSI is between 30 and 70
     """
@@ -106,17 +106,17 @@ class EquityFilter:
 
         # Check criteria
 
-        # 1. SMA alignment: SMA(8) < SMA(20) < SMA(50) < price
-        if not (sma_8 < sma_20):
-            failure_reasons.append(f"SMA(8) {sma_8:.2f} >= SMA(20) {sma_20:.2f}")
-        if not (sma_20 < sma_50):
-            failure_reasons.append(f"SMA(20) {sma_20:.2f} >= SMA(50) {sma_50:.2f}")
-        if not (sma_50 < current_price):
-            failure_reasons.append(f"SMA(50) {sma_50:.2f} >= Price {current_price:.2f}")
+        # 1. Price above all SMAs and BB upper
+        if not (current_price > sma_8):
+            failure_reasons.append(f"Price {current_price:.2f} <= SMA(8) {sma_8:.2f}")
+        if not (current_price > sma_20):
+            failure_reasons.append(f"Price {current_price:.2f} <= SMA(20) {sma_20:.2f}")
+        if not (current_price > sma_50):
+            failure_reasons.append(f"Price {current_price:.2f} <= SMA(50) {sma_50:.2f}")
 
-        # 2. Price below BB upper
-        if not (current_price < bb_upper_val):
-            failure_reasons.append(f"Price {current_price:.2f} >= BB_upper {bb_upper_val:.2f}")
+        # 2. Price above BB upper (50, 1std)
+        if not (current_price > bb_upper_val):
+            failure_reasons.append(f"Price {current_price:.2f} <= BB_upper {bb_upper_val:.2f}")
 
         # 3. SMA(50) trending up
         if not sma_50_trending:
