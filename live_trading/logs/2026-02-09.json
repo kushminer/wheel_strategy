@@ -1,0 +1,944 @@
+{
+  "date": "2026-02-09",
+  "config_snapshot": {
+    "starting_cash": 500000,
+    "num_tickers": 10,
+    "max_strike_pct": 0.98,
+    "min_strike_pct": 0.85,
+    "chain_min_strike_pct": 0.7,
+    "min_daily_return": 0.15,
+    "delta_min": 0.15,
+    "delta_max": 0.4,
+    "min_dte": 1,
+    "max_dte": 10,
+    "max_candidates_per_symbol": 5,
+    "max_candidates_total": 20,
+    "max_position_pct": 0.1,
+    "poll_interval_seconds": 60,
+    "paper_trading": true
+  },
+  "equity_scan": {
+    "timestamp": "2026-02-09T15:59:13.889346",
+    "scanned": 501,
+    "passed": [
+      "TJX",
+      "ZBRA"
+    ],
+    "results": {
+      "TJX": {
+        "price": 156.05,
+        "sma_8": 152.6,
+        "sma_20": 153.46,
+        "sma_50": 154.1,
+        "rsi": 49.9,
+        "collateral": 15605.0
+      },
+      "ZBRA": {
+        "price": 257.92,
+        "sma_8": 242.97,
+        "sma_20": 246.48,
+        "sma_50": 251.92,
+        "rsi": 62.3,
+        "collateral": 25792.0
+      }
+    }
+  },
+  "cycles": [
+    {
+      "cycle": 1,
+      "timestamp": "2026-02-09T15:55:54.439686",
+      "vix": 17.36,
+      "deployable_cash": 400000.0,
+      "market_open": true,
+      "mode": "active",
+      "options_checked": [
+        "TJX",
+        "ZBRA"
+      ],
+      "candidates_found": 0,
+      "failure_tally": {},
+      "entries": 0,
+      "exits": 0,
+      "positions": 0,
+      "collateral": 0,
+      "errors": []
+    },
+    {
+      "cycle": 2,
+      "timestamp": "2026-02-09T15:56:54.812679",
+      "vix": 17.37,
+      "deployable_cash": 400000.0,
+      "market_open": true,
+      "mode": "active",
+      "options_checked": [
+        "TJX",
+        "ZBRA"
+      ],
+      "candidates_found": 0,
+      "failure_tally": {},
+      "entries": 0,
+      "exits": 0,
+      "positions": 0,
+      "collateral": 0,
+      "errors": []
+    }
+  ],
+  "trades": [],
+  "shutdown": {
+    "timestamp": "2026-02-09T15:56:54.991134",
+    "reason": "keyboard_interrupt",
+    "total_cycles": 2,
+    "final_positions": 0,
+    "final_collateral": 0
+  },
+  "options_scans": [
+    {
+      "timestamp": "2026-02-09T15:52:12.677709",
+      "cycle": 0,
+      "symbol": "TJX",
+      "contracts_evaluated": 6,
+      "contracts_passed": 0,
+      "contracts": [
+        {
+          "contract": "TJX260213P00135000",
+          "strike": 135.0,
+          "dte": 4,
+          "bid": 0.03,
+          "ask": 0.22,
+          "delta": 0.027,
+          "iv": 0.7324,
+          "daily_return": 4.8e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0048% < 15.0000%",
+            "Delta 0.027 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00144000",
+          "strike": 144.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.17,
+          "delta": 0.033,
+          "iv": 0.4232,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.033 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00148000",
+          "strike": 148.0,
+          "dte": 4,
+          "bid": 0.04,
+          "ask": 0.15,
+          "delta": 0.046,
+          "iv": 0.3044,
+          "daily_return": 6.4e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0064% < 15.0000%",
+            "Delta 0.046 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00149000",
+          "strike": 149.0,
+          "dte": 4,
+          "bid": 0.08,
+          "ask": 0.22,
+          "delta": 0.068,
+          "iv": 0.3016,
+          "daily_return": 0.000128,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0128% < 15.0000%",
+            "Delta 0.068 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00150000",
+          "strike": 150.0,
+          "dte": 4,
+          "bid": 0.17,
+          "ask": 0.3,
+          "delta": 0.1,
+          "iv": 0.3003,
+          "daily_return": 0.000272,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0272% < 15.0000%",
+            "Delta 0.100 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00152500",
+          "strike": 152.5,
+          "dte": 4,
+          "bid": 0.39,
+          "ask": 0.62,
+          "delta": 0.202,
+          "iv": 0.2706,
+          "daily_return": 0.000625,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0625% < 15.0000%"
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-02-09T15:52:12.731489",
+      "cycle": 0,
+      "symbol": "ZBRA",
+      "contracts_evaluated": 0,
+      "contracts_passed": 0,
+      "contracts": []
+    },
+    {
+      "timestamp": "2026-02-09T15:52:25.860443",
+      "cycle": 0,
+      "symbol": "TJX",
+      "contracts_evaluated": 6,
+      "contracts_passed": 0,
+      "contracts": [
+        {
+          "contract": "TJX260213P00135000",
+          "strike": 135.0,
+          "dte": 4,
+          "bid": 0.03,
+          "ask": 0.22,
+          "delta": 0.027,
+          "iv": 0.7326,
+          "daily_return": 4.8e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0048% < 15.0000%",
+            "Delta 0.027 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00144000",
+          "strike": 144.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.17,
+          "delta": 0.033,
+          "iv": 0.4234,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.033 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00148000",
+          "strike": 148.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.19,
+          "delta": 0.047,
+          "iv": 0.3078,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.047 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00149000",
+          "strike": 149.0,
+          "dte": 4,
+          "bid": 0.08,
+          "ask": 0.18,
+          "delta": 0.062,
+          "iv": 0.2923,
+          "daily_return": 0.000128,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0128% < 15.0000%",
+            "Delta 0.062 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00150000",
+          "strike": 150.0,
+          "dte": 4,
+          "bid": 0.21,
+          "ask": 0.26,
+          "delta": 0.1,
+          "iv": 0.3007,
+          "daily_return": 0.000336,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0336% < 15.0000%",
+            "Delta 0.100 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00152500",
+          "strike": 152.5,
+          "dte": 4,
+          "bid": 0.35,
+          "ask": 0.62,
+          "delta": 0.198,
+          "iv": 0.2666,
+          "daily_return": 0.000561,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0561% < 15.0000%"
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-02-09T15:52:25.907226",
+      "cycle": 0,
+      "symbol": "ZBRA",
+      "contracts_evaluated": 0,
+      "contracts_passed": 0,
+      "contracts": []
+    },
+    {
+      "timestamp": "2026-02-09T15:52:31.112402",
+      "cycle": 0,
+      "symbol": "TJX",
+      "contracts_evaluated": 6,
+      "contracts_passed": 0,
+      "contracts": [
+        {
+          "contract": "TJX260213P00135000",
+          "strike": 135.0,
+          "dte": 4,
+          "bid": 0.03,
+          "ask": 0.26,
+          "delta": 0.03,
+          "iv": 0.7511,
+          "daily_return": 4.8e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0048% < 15.0000%",
+            "Delta 0.030 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00144000",
+          "strike": 144.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.13,
+          "delta": 0.027,
+          "iv": 0.4049,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.027 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00148000",
+          "strike": 148.0,
+          "dte": 4,
+          "bid": 0.04,
+          "ask": 0.19,
+          "delta": 0.052,
+          "iv": 0.3161,
+          "daily_return": 6.4e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0064% < 15.0000%",
+            "Delta 0.052 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00149000",
+          "strike": 149.0,
+          "dte": 4,
+          "bid": 0.08,
+          "ask": 0.22,
+          "delta": 0.068,
+          "iv": 0.3013,
+          "daily_return": 0.000128,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0128% < 15.0000%",
+            "Delta 0.068 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00150000",
+          "strike": 150.0,
+          "dte": 4,
+          "bid": 0.17,
+          "ask": 0.3,
+          "delta": 0.1,
+          "iv": 0.3,
+          "daily_return": 0.000272,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0272% < 15.0000%",
+            "Delta 0.100 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00152500",
+          "strike": 152.5,
+          "dte": 4,
+          "bid": 0.39,
+          "ask": 0.58,
+          "delta": 0.198,
+          "iv": 0.2658,
+          "daily_return": 0.000625,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0625% < 15.0000%"
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-02-09T15:52:31.161322",
+      "cycle": 0,
+      "symbol": "ZBRA",
+      "contracts_evaluated": 0,
+      "contracts_passed": 0,
+      "contracts": []
+    },
+    {
+      "timestamp": "2026-02-09T15:55:54.756112",
+      "cycle": 1,
+      "symbol": "TJX",
+      "contracts_evaluated": 6,
+      "contracts_passed": 0,
+      "contracts": [
+        {
+          "contract": "TJX260213P00135000",
+          "strike": 135.0,
+          "dte": 4,
+          "bid": 0.03,
+          "ask": 0.26,
+          "delta": 0.03,
+          "iv": 0.7463,
+          "daily_return": 4.8e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0048% < 15.0000%",
+            "Delta 0.030 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00144000",
+          "strike": 144.0,
+          "dte": 4,
+          "bid": 0.05,
+          "ask": 0.17,
+          "delta": 0.038,
+          "iv": 0.4337,
+          "daily_return": 8e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0080% < 15.0000%",
+            "Delta 0.038 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00148000",
+          "strike": 148.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.15,
+          "delta": 0.041,
+          "iv": 0.2891,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.041 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00149000",
+          "strike": 149.0,
+          "dte": 4,
+          "bid": 0.12,
+          "ask": 0.22,
+          "delta": 0.075,
+          "iv": 0.3046,
+          "daily_return": 0.000192,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0192% < 15.0000%",
+            "Delta 0.075 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00150000",
+          "strike": 150.0,
+          "dte": 4,
+          "bid": 0.21,
+          "ask": 0.26,
+          "delta": 0.102,
+          "iv": 0.2938,
+          "daily_return": 0.000337,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0337% < 15.0000%",
+            "Delta 0.102 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00152500",
+          "strike": 152.5,
+          "dte": 4,
+          "bid": 0.39,
+          "ask": 0.62,
+          "delta": 0.207,
+          "iv": 0.2624,
+          "daily_return": 0.000626,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0626% < 15.0000%"
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-02-09T15:55:54.801467",
+      "cycle": 1,
+      "symbol": "ZBRA",
+      "contracts_evaluated": 0,
+      "contracts_passed": 0,
+      "contracts": []
+    },
+    {
+      "timestamp": "2026-02-09T15:56:54.943261",
+      "cycle": 2,
+      "symbol": "TJX",
+      "contracts_evaluated": 6,
+      "contracts_passed": 0,
+      "contracts": [
+        {
+          "contract": "TJX260213P00135000",
+          "strike": 135.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.22,
+          "delta": 0.025,
+          "iv": 0.7187,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.025 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00144000",
+          "strike": 144.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.13,
+          "delta": 0.028,
+          "iv": 0.4015,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.028 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00148000",
+          "strike": 148.0,
+          "dte": 4,
+          "bid": 0.04,
+          "ask": 0.19,
+          "delta": 0.053,
+          "iv": 0.3124,
+          "daily_return": 6.4e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0064% < 15.0000%",
+            "Delta 0.053 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00149000",
+          "strike": 149.0,
+          "dte": 4,
+          "bid": 0.12,
+          "ask": 0.22,
+          "delta": 0.075,
+          "iv": 0.3062,
+          "daily_return": 0.000192,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0192% < 15.0000%",
+            "Delta 0.075 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00150000",
+          "strike": 150.0,
+          "dte": 4,
+          "bid": 0.17,
+          "ask": 0.3,
+          "delta": 0.101,
+          "iv": 0.2956,
+          "daily_return": 0.000273,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0273% < 15.0000%",
+            "Delta 0.101 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00152500",
+          "strike": 152.5,
+          "dte": 4,
+          "bid": 0.35,
+          "ask": 0.62,
+          "delta": 0.202,
+          "iv": 0.2603,
+          "daily_return": 0.000561,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0561% < 15.0000%"
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-02-09T15:56:54.989650",
+      "cycle": 2,
+      "symbol": "ZBRA",
+      "contracts_evaluated": 0,
+      "contracts_passed": 0,
+      "contracts": []
+    },
+    {
+      "timestamp": "2026-02-09T15:57:09.910780",
+      "cycle": 2,
+      "symbol": "TJX",
+      "contracts_evaluated": 6,
+      "contracts_passed": 0,
+      "contracts": [
+        {
+          "contract": "TJX260213P00135000",
+          "strike": 135.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.26,
+          "delta": 0.028,
+          "iv": 0.7386,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.028 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00144000",
+          "strike": 144.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.13,
+          "delta": 0.028,
+          "iv": 0.4017,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.028 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00148000",
+          "strike": 148.0,
+          "dte": 4,
+          "bid": 0.04,
+          "ask": 0.19,
+          "delta": 0.053,
+          "iv": 0.3125,
+          "daily_return": 6.4e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0064% < 15.0000%",
+            "Delta 0.053 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00149000",
+          "strike": 149.0,
+          "dte": 4,
+          "bid": 0.12,
+          "ask": 0.22,
+          "delta": 0.075,
+          "iv": 0.3064,
+          "daily_return": 0.000192,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0192% < 15.0000%",
+            "Delta 0.075 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00150000",
+          "strike": 150.0,
+          "dte": 4,
+          "bid": 0.21,
+          "ask": 0.3,
+          "delta": 0.106,
+          "iv": 0.3026,
+          "daily_return": 0.000337,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0337% < 15.0000%",
+            "Delta 0.106 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00152500",
+          "strike": 152.5,
+          "dte": 4,
+          "bid": 0.39,
+          "ask": 0.62,
+          "delta": 0.205,
+          "iv": 0.2648,
+          "daily_return": 0.000625,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0625% < 15.0000%"
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-02-09T15:57:09.961886",
+      "cycle": 2,
+      "symbol": "ZBRA",
+      "contracts_evaluated": 0,
+      "contracts_passed": 0,
+      "contracts": []
+    },
+    {
+      "timestamp": "2026-02-09T15:58:13.335869",
+      "cycle": 3,
+      "symbol": "TJX",
+      "contracts_evaluated": 6,
+      "contracts_passed": 0,
+      "contracts": [
+        {
+          "contract": "TJX260213P00135000",
+          "strike": 135.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.26,
+          "delta": 0.028,
+          "iv": 0.7415,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.028 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00144000",
+          "strike": 144.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.17,
+          "delta": 0.033,
+          "iv": 0.4226,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.033 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00148000",
+          "strike": 148.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.15,
+          "delta": 0.041,
+          "iv": 0.2938,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.041 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00149000",
+          "strike": 149.0,
+          "dte": 4,
+          "bid": 0.08,
+          "ask": 0.22,
+          "delta": 0.068,
+          "iv": 0.301,
+          "daily_return": 0.000128,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0128% < 15.0000%",
+            "Delta 0.068 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00150000",
+          "strike": 150.0,
+          "dte": 4,
+          "bid": 0.21,
+          "ask": 0.26,
+          "delta": 0.1,
+          "iv": 0.2996,
+          "daily_return": 0.000337,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0337% < 15.0000%",
+            "Delta 0.100 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00152500",
+          "strike": 152.5,
+          "dte": 4,
+          "bid": 0.35,
+          "ask": 0.62,
+          "delta": 0.198,
+          "iv": 0.2653,
+          "daily_return": 0.000561,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0561% < 15.0000%"
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-02-09T15:58:13.387905",
+      "cycle": 3,
+      "symbol": "ZBRA",
+      "contracts_evaluated": 0,
+      "contracts_passed": 0,
+      "contracts": []
+    },
+    {
+      "timestamp": "2026-02-09T15:59:14.264056",
+      "cycle": 1,
+      "symbol": "TJX",
+      "contracts_evaluated": 6,
+      "contracts_passed": 0,
+      "contracts": [
+        {
+          "contract": "TJX260213P00135000",
+          "strike": 135.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.26,
+          "delta": 0.028,
+          "iv": 0.7431,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.028 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00144000",
+          "strike": 144.0,
+          "dte": 4,
+          "bid": 0.01,
+          "ask": 0.17,
+          "delta": 0.033,
+          "iv": 0.4242,
+          "daily_return": 1.6e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0016% < 15.0000%",
+            "Delta 0.033 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00148000",
+          "strike": 148.0,
+          "dte": 4,
+          "bid": 0.04,
+          "ask": 0.15,
+          "delta": 0.046,
+          "iv": 0.3055,
+          "daily_return": 6.4e-05,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0064% < 15.0000%",
+            "Delta 0.046 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00149000",
+          "strike": 149.0,
+          "dte": 4,
+          "bid": 0.12,
+          "ask": 0.18,
+          "delta": 0.068,
+          "iv": 0.3029,
+          "daily_return": 0.000192,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0192% < 15.0000%",
+            "Delta 0.068 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00150000",
+          "strike": 150.0,
+          "dte": 4,
+          "bid": 0.17,
+          "ask": 0.26,
+          "delta": 0.094,
+          "iv": 0.2946,
+          "daily_return": 0.000272,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0272% < 15.0000%",
+            "Delta 0.094 outside [0.15, 0.4]"
+          ]
+        },
+        {
+          "contract": "TJX260213P00152500",
+          "strike": 152.5,
+          "dte": 4,
+          "bid": 0.39,
+          "ask": 0.62,
+          "delta": 0.201,
+          "iv": 0.2723,
+          "daily_return": 0.000625,
+          "passes": false,
+          "failure_reasons": [
+            "Daily return 0.0625% < 15.0000%"
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-02-09T15:59:14.482488",
+      "cycle": 1,
+      "symbol": "ZBRA",
+      "contracts_evaluated": 0,
+      "contracts_passed": 0,
+      "contracts": []
+    }
+  ]
+}
