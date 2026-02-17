@@ -1,1 +1,1 @@
-"""Data layer: VIX, equity, options fetchers and unified data manager."""
+"""Data layer: market data fetching and models."""

@@ -1,1 +1,1 @@
-"""Trading layer: portfolio, risk management, execution, main loop."""
+"""Trading layer: execution, risk, position tracking, orchestration."""

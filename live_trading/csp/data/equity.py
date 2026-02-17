@@ -1,29 +1,17 @@
-"""Equity price data fetcher from Alpaca."""
+"""Equity price data fetcher via Alpaca."""
 
-from __future__ import annotations
-
-import logging
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Dict, List
+from typing import Dict, List
 
 import pandas as pd
-
-if TYPE_CHECKING:
-    from csp.clients import AlpacaClientManager
-
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-logger = logging.getLogger(__name__)
-
 
 class EquityDataFetcher:
-    """
-    Fetches equity price data from Alpaca.
-    Provides historical bars and current prices.
-    """
+    """Fetches equity price data from Alpaca."""
 
-    def __init__(self, alpaca_manager: "AlpacaClientManager") -> None:
+    def __init__(self, alpaca_manager):
         self.client = alpaca_manager.data_client
 
     def get_close_history(
@@ -31,12 +19,6 @@ class EquityDataFetcher:
         symbols: List[str],
         days: int = 60,
     ) -> Dict[str, pd.Series]:
-        """
-        Get closing price history for multiple symbols.
-
-        Returns:
-            Dict mapping symbol -> pd.Series of close prices
-        """
         end_date = datetime.now()
         start_date = end_date - timedelta(days=int(days * 1.5))
 
@@ -49,7 +31,7 @@ class EquityDataFetcher:
 
         bars = self.client.get_stock_bars(request)
 
-        result: Dict[str, pd.Series] = {}
+        result = {}
         for symbol in symbols:
             if symbol in bars.data:
                 symbol_bars = bars.data[symbol]
@@ -59,21 +41,17 @@ class EquityDataFetcher:
                     name=symbol,
                 )
                 result[symbol] = closes.tail(days)
-            else:
-                logger.warning("No data for symbol %s", symbol)
 
         return result
 
-    def get_current_price(self, symbol: str) -> float:
-        """Get the most recent price for a symbol."""
-        history = self.get_close_history([symbol], days=5)
+    def get_current_price(self, symbol: str, price_lookback_days: int = 5) -> float:
+        history = self.get_close_history([symbol], days=price_lookback_days)
         if symbol in history and len(history[symbol]) > 0:
             return float(history[symbol].iloc[-1])
         raise ValueError(f"No price data for {symbol}")
 
-    def get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
-        """Get current prices for multiple symbols efficiently."""
-        history = self.get_close_history(symbols, days=5)
+    def get_current_prices(self, symbols: List[str], price_lookback_days: int = 5) -> Dict[str, float]:
+        history = self.get_close_history(symbols, days=price_lookback_days)
         return {
             symbol: float(prices.iloc[-1])
             for symbol, prices in history.items()

@@ -1,74 +1,69 @@
-#!/usr/bin/env python3
-"""CSP strategy CLI - test orders or run full trading loop."""
+"""CLI entry point for Cloud Run Job deployment.
 
-import argparse
-import logging
+Usage:
+    python -m csp.main              # uses env vars for config
+    python -m csp.main --dry-run    # prints config and exits
+
+Environment variables:
+    ALPACA_API_KEY          Alpaca API key (required)
+    ALPACA_SECRET_KEY       Alpaca secret key (required)
+    PAPER_TRADING           "true" or "false" (default: true)
+    STARTING_CASH           Starting cash amount (default: 1000000)
+    STORAGE_BACKEND         "local" or "gcs" (default: local)
+    GCS_BUCKET_NAME         GCS bucket name (required if storage_backend=gcs)
+    GCS_PREFIX              GCS path prefix (default: "paper")
+    POLL_INTERVAL           Seconds between cycles (default: 60)
+    MAX_CYCLES              Max cycles before exit, 0=unlimited (default: 0)
+"""
+
+import asyncio
 import os
 import sys
 
-from dotenv import load_dotenv
+from csp.config import StrategyConfig
+from csp.clients import AlpacaClientManager
+from csp.data.vix import VixDataFetcher
+from csp.data.greeks import GreeksCalculator
+from csp.data.manager import DataManager
+from csp.signals.scanner import StrategyScanner
+from csp.storage import build_storage_backend
+from csp.trading.execution import ExecutionEngine
+from csp.trading.risk import RiskManager
+from csp.trading.metadata import StrategyMetadataStore
+from csp.trading.loop import TradingLoop
 
-# Load .env before other imports that may use env vars
-load_dotenv()
+
+def _env_bool(key: str, default: bool = True) -> bool:
+    val = os.getenv(key, str(default)).lower()
+    return val in ("true", "1", "yes")
 
 
-def _setup_logging(log_level: str = "INFO") -> None:
-    """Configure Python logging for the application."""
-    level = getattr(logging, log_level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
+def _env_int(key: str, default: int) -> int:
+    return int(os.getenv(key, str(default)))
+
+
+def _env_float(key: str, default: float) -> float:
+    return float(os.getenv(key, str(default)))
+
+
+def build_config() -> StrategyConfig:
+    """Build StrategyConfig from environment variables."""
+    return StrategyConfig(
+        paper_trading=_env_bool("PAPER_TRADING", True),
+        starting_cash=_env_float("STARTING_CASH", 1_000_000),
+        storage_backend=os.getenv("STORAGE_BACKEND", "local"),
+        gcs_bucket_name=os.getenv("GCS_BUCKET_NAME"),
+        gcs_prefix=os.getenv("GCS_PREFIX", "paper"),
+        poll_interval_seconds=_env_int("POLL_INTERVAL", 60),
     )
 
 
-def _run_test_orders(config, alpaca, data_manager, execution) -> int:
-    """Run order type verification. Returns exit code."""
-    from csp.test_orders import test_all_order_types
-
-    if not data_manager.equity_fetcher or not data_manager.options_fetcher:
-        logging.getLogger(__name__).error(
-            "Data manager requires Alpaca (equity/options fetchers)"
-        )
-        return 1
-
-    results = test_all_order_types(
-        execution_engine=execution,
-        config=config,
-        equity_fetcher=data_manager.equity_fetcher,
-        options_fetcher=data_manager.options_fetcher,
-        alpaca_manager=alpaca,
-        num_tickers=1,
-        do_replenish=True,
-    )
-
-    passed = sum(
-        1
-        for r in results
-        if r.get("sell") not in ("FAIL", "ERROR", "SKIP", "REJECTED")
-    )
-    return 0 if passed == len(results) else 1
-
-
-def _run_strategy(
-    config, alpaca, data_manager, execution, max_cycles=None
-) -> None:
-    """Run the full trading loop."""
-    from csp.data.options import GreeksCalculator
-    from csp.data.vix import VixDataFetcher
-    from csp.signals.scanner import StrategyScanner
-    from csp.trading.loop import TradingLoop
-    from csp.trading.portfolio import PortfolioManager
-    from csp.trading.risk import RiskManager
-
-    greeks_calc = GreeksCalculator()
+def build_components(config: StrategyConfig):
+    """Wire up all strategy components."""
+    alpaca = AlpacaClientManager(paper=config.paper_trading)
     vix_fetcher = VixDataFetcher()
-
-    if not data_manager.equity_fetcher or not data_manager.options_fetcher:
-        raise RuntimeError(
-            "Data manager requires Alpaca (equity/options fetchers)"
-        )
+    greeks_calc = GreeksCalculator()
+    data_manager = DataManager(alpaca, config)
 
     scanner = StrategyScanner(
         config=config,
@@ -77,97 +72,64 @@ def _run_strategy(
         greeks_calc=greeks_calc,
     )
 
-    portfolio = PortfolioManager(
-        config=config,
-        persistence_path=os.path.join(
-            os.getcwd(), "portfolio_state.json"
-        ),
+    execution = ExecutionEngine(alpaca, config)
+    risk_manager = RiskManager(config)
+
+    storage = build_storage_backend(config)
+    metadata = StrategyMetadataStore(
+        path="strategy_metadata.json",
+        backend=storage,
     )
 
-    risk_manager = RiskManager(config=config)
-
-    trading_loop = TradingLoop(
+    loop = TradingLoop(
         config=config,
         data_manager=data_manager,
         scanner=scanner,
-        portfolio=portfolio,
+        metadata_store=metadata,
         risk_manager=risk_manager,
         execution=execution,
         vix_fetcher=vix_fetcher,
         greeks_calc=greeks_calc,
+        alpaca_manager=alpaca,
     )
 
-    trading_loop.run(
-        poll_interval=config.poll_interval_seconds,
-        max_cycles=max_cycles,
-    )
+    return loop
 
 
-def main() -> int:
-    """CLI entry point."""
-    from csp.clients import AlpacaClientManager
-    from csp.config import StrategyConfig
-    from csp.data.manager import DataManager
-    from csp.trading.execution import ExecutionEngine
+async def main():
+    dry_run = "--dry-run" in sys.argv
 
-    parser = argparse.ArgumentParser(
-        description="CSP (Cash-Secured Put) Strategy"
-    )
-    parser.add_argument(
-        "--test-orders",
-        action="store_true",
-        help="Run order type verification before trading",
-    )
-    parser.add_argument(
-        "--run",
-        action="store_true",
-        help="Run the full trading loop",
-    )
-    parser.add_argument(
-        "--max-cycles",
-        type=int,
-        default=None,
-        help="Max trading cycles (for testing); default is unlimited",
-    )
-    parser.add_argument(
-        "--log-level",
-        default=None,
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Override log level (default from config/env)",
-    )
-    args = parser.parse_args()
+    print("=" * 60)
+    print("CSP Strategy — Cloud Run Job")
+    print("=" * 60)
 
-    if not args.test_orders and not args.run:
-        parser.print_help()
-        return 0
+    config = build_config()
 
-    config = StrategyConfig()
-    log_level = args.log_level or config.log_level
-    _setup_logging(log_level)
+    print(f"  Paper trading:    {config.paper_trading}")
+    print(f"  Starting cash:    ${config.starting_cash:,.0f}")
+    print(f"  Storage backend:  {config.storage_backend}")
+    if config.storage_backend == "gcs":
+        print(f"  GCS bucket:       {config.gcs_bucket_name}")
+        print(f"  GCS prefix:       {config.gcs_prefix}")
+    print(f"  Poll interval:    {config.poll_interval_seconds}s")
+    print(f"  Universe size:    {len(config.ticker_universe)} symbols")
 
-    logger = logging.getLogger(__name__)
+    if dry_run:
+        print("\n--dry-run: config looks good, exiting.")
+        return
 
-    try:
-        alpaca = AlpacaClientManager(paper=config.paper_trading)
-    except ValueError as e:
-        logger.error("Alpaca credentials: %s", e)
-        return 1
+    loop = build_components(config)
 
-    data_manager = DataManager(alpaca_manager=alpaca, config=config)
-    execution = ExecutionEngine(alpaca_manager=alpaca, config=config)
+    poll_interval = config.poll_interval_seconds
+    max_cycles = _env_int("MAX_CYCLES", 0) or None  # 0 means unlimited
 
-    if args.test_orders:
-        return _run_test_orders(config, alpaca, data_manager, execution)
+    print(f"\nStarting loop (poll={poll_interval}s, max_cycles={max_cycles})")
+    print("=" * 60)
 
-    if args.run:
-        _run_strategy(
-            config, alpaca, data_manager, execution,
-            max_cycles=args.max_cycles,
-        )
-        return 0
+    await loop.run(poll_interval=poll_interval, max_cycles=max_cycles)
 
-    return 0
+    print("\nLoop exited cleanly.")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    asyncio.run(main())

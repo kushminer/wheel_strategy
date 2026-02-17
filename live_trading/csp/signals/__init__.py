@@ -1,1 +1,1 @@
-"""Signal layer: technical indicators, equity filter, options filter, scanner."""
+"""Signals layer: equity and options filtering."""
