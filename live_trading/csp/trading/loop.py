@@ -73,6 +73,7 @@ class TradingLoop:
         self._last_scan_results: List = []                # Full scan results for diagnostics        
         self._cycle_count: int = 0
         self._last_step_log: List[dict] = []  # Step-by-step data from last order attempt
+        self._api_semaphore = asyncio.Semaphore(config.max_concurrent_options_fetches)
         self._storage_backend = build_storage_backend(config)
         self.logger = DailyLog(log_dir="logs", backend=self._storage_backend)
         print(f"  Daily log: {self.logger.today_path}")
@@ -222,7 +223,7 @@ class TradingLoop:
     
     async def monitor_positions(self, current_vix: float) -> List[Tuple]:
         """
-        Check all positions for exit conditions.
+        Check all positions for exit conditions (parallel).
 
         Returns:
             List of (position, risk_result, current_premium) tuples that should be closed
@@ -236,6 +237,8 @@ class TradingLoop:
 
         reference_vix = await self.get_session_vix_reference()
 
+        # Build position proxies, filtering out assigned and unknown
+        positions_to_check = []
         for alpaca_pos in await self._get_option_positions():
             option_sym = alpaca_pos.symbol
             if option_sym in assigned_ids:
@@ -245,8 +248,23 @@ class TradingLoop:
             if meta is None:
                 print(f"  Warning: No metadata for {option_sym}, skipping risk checks")
                 continue
-            position = self._build_position_proxy(alpaca_pos, meta)
+            positions_to_check.append(self._build_position_proxy(alpaca_pos, meta))
 
+        # Check all positions in parallel
+        if positions_to_check:
+            results = await asyncio.gather(
+                *[self._check_single_position(pos, current_vix, reference_vix)
+                  for pos in positions_to_check]
+            )
+            exits_needed.extend(r for r in results if r is not None)
+
+        return exits_needed
+
+    async def _check_single_position(
+        self, position, current_vix: float, reference_vix: float
+    ) -> Optional[Tuple]:
+        """Check a single position for exit conditions. Safe for asyncio.gather()."""
+        async with self._api_semaphore:
             try:
                 # Check expiration proximity
                 days_to_expiry = (position.expiration - date.today()).days
@@ -270,8 +288,7 @@ class TradingLoop:
                             'current_premium': current_premium,
                         }
                     )
-                    exits_needed.append((position, expiry_result, current_premium))
-                    continue
+                    return (position, expiry_result, current_premium)
 
                 # Get current data for the position
                 current_stock_price = await _arun(
@@ -287,7 +304,7 @@ class TradingLoop:
 
                 if position.option_symbol not in snapshots:
                     print(f"  Warning: No data for {position.option_symbol}")
-                    continue
+                    return None
 
                 snapshot = snapshots[position.option_symbol]
                 current_premium = snapshot.get('ask', 0)  # Use ask to buy back
@@ -315,8 +332,7 @@ class TradingLoop:
                                 'current_premium': current_premium,
                             }
                         )
-                        exits_needed.append((position, data_result, current_premium))
-                        continue
+                        return (position, data_result, current_premium)
                     else:
                         print(f"  WARNING: Delta unavailable for {position.symbol}, using entry_delta as fallback")
                         current_delta = position.entry_delta
@@ -332,12 +348,13 @@ class TradingLoop:
                 )
 
                 if risk_result.should_exit:
-                    exits_needed.append((position, risk_result, current_premium))
+                    return (position, risk_result, current_premium)
+
+                return None
 
             except Exception as e:
                 print(f"  Error monitoring {position.symbol}: {e}")
-
-        return exits_needed
+                return None
 
 
     async def execute_exit(
@@ -418,40 +435,14 @@ class TradingLoop:
                     print(f"    Market fallback also failed: {result.message}")
                     return False
 
-        # === Stop-loss exits: market, bid, or stepped ===
-        result = None
-        if self.config.stop_loss_order_type == "stepped":
-            print(f"    Stop-loss using stepped exit")
-            result, filled_price = await self._execute_stepped_stop_exit(position)
-            if filled_price > 0:
-                exit_premium = filled_price
-        elif self.config.stop_loss_order_type == "bid":
-            snapshots = await _arun(
-                self.data_manager.options_fetcher.get_option_snapshots,
-                [position.option_symbol]
-            )
-            snapshot = snapshots.get(position.option_symbol, {})
-            bid_price = snapshot.get('bid', 0)
-            limit_price = None
-            if bid_price and bid_price > 0:
-                limit_price = round(bid_price, 2)
-                print(f"    Stop-loss using bid limit @ ${limit_price:.2f}")
-            else:
-                print(f"    No bid available, using market order")
-            result = await _arun(
-                self.execution.buy_to_close,
-                option_symbol=position.option_symbol,
-                quantity=abs(position.quantity),
-                limit_price=limit_price,
-            )
-        else:  # "market"
-            print(f"    Stop-loss using market order")
-            result = await _arun(
-                self.execution.buy_to_close,
-                option_symbol=position.option_symbol,
-                quantity=abs(position.quantity),
-                limit_price=None,
-            )
+        # === Stop-loss exits: always market order (immediate) ===
+        print(f"    Stop-loss: market order")
+        result = await _arun(
+            self.execution.buy_to_close,
+            option_symbol=position.option_symbol,
+            quantity=abs(position.quantity),
+            limit_price=None,
+        )
 
         if result and result.success:
             self.metadata.record_exit(
@@ -480,7 +471,7 @@ class TradingLoop:
             return self._equity_passing
 
         scan_start = datetime.now()
-        print(f"  Initiating equity scan at {scan_start.strftime('%H:%M:%S')}...")
+        print(f"  Initiating equity scan at {datetime.now(self.eastern).strftime('%H:%M:%S %Z')}...")
         scan_results = await _arun(self.scanner.scan_universe, skip_equity_filter=False)
         scan_elapsed = (datetime.now() - scan_start).total_seconds()
         
@@ -520,17 +511,33 @@ class TradingLoop:
             [r.equity_result for r in scan_results],
             self._equity_passing
         )
-                
+        self.logger.flush()
+
         return self._equity_passing
 
     def _get_sort_key(self, contract):
-        """Get sort key based on configured rank mode."""
+        """Get sort key based on configured per-ticker rank mode."""
         if self.config.contract_rank_mode == "daily_return_per_delta":
             return contract.daily_return_per_delta
         elif self.config.contract_rank_mode == "days_since_strike":
             return contract.days_since_strike or 0
         elif self.config.contract_rank_mode == "lowest_strike_price":
             return -contract.strike
+        elif self.config.contract_rank_mode == "lowest_delta":
+            return -(abs(contract.delta) if contract.delta else 1.0)
+        else:  # "daily_return_on_collateral"
+            return contract.daily_return_on_collateral
+
+    def _get_universe_sort_key(self, contract):
+        """Get sort key for cross-ticker ranking (universe_rank_mode)."""
+        if self.config.universe_rank_mode == "daily_return_per_delta":
+            return contract.daily_return_per_delta
+        elif self.config.universe_rank_mode == "days_since_strike":
+            return contract.days_since_strike or 0
+        elif self.config.universe_rank_mode == "lowest_strike_price":
+            return -contract.strike
+        elif self.config.universe_rank_mode == "lowest_delta":
+            return -(abs(contract.delta) if contract.delta else 1.0)
         else:  # "daily_return_on_collateral"
             return contract.daily_return_on_collateral
 
@@ -549,6 +556,59 @@ class TradingLoop:
             n = int(available_cash // collateral_per_contract)
         n = min(n, self.config.max_contracts_per_ticker)
         return max(1, n)
+
+    async def _execute_market_entry(
+        self,
+        candidate: 'OptionContract',
+        qty: int,
+    ) -> Optional[Tuple['OrderResult', float]]:
+        """Execute a market order entry for a CSP position.
+
+        Used when entry_order_type='market'. Reliable with delayed (indicative) data
+        since no limit price depends on stale quotes.
+        """
+        symbol = candidate.symbol
+        print(f"    Market order: selling {qty}x {symbol}")
+
+        self._last_step_log = []
+
+        result = await _arun(
+            self.execution.sell_to_open,
+            option_symbol=symbol,
+            quantity=qty,
+            limit_price=None,
+        )
+
+        if not result.success:
+            print(f"    Market order failed: {result.message}")
+            self._last_step_log.append({
+                "step": 0, "type": "market", "status": "failed",
+                "message": result.message,
+            })
+            return None
+
+        # Brief wait for fill to propagate
+        await asyncio.sleep(2)
+
+        status = await _arun(self.execution.get_order_status, result.order_id)
+        filled_price = (
+            float(status['filled_avg_price'])
+            if status and status.get('filled_avg_price')
+            else candidate.bid
+        )
+        order_status = status['status'] if status else 'unknown'
+
+        self._last_step_log.append({
+            "step": 0, "type": "market", "status": order_status,
+            "filled_price": filled_price,
+        })
+
+        if order_status in ('filled', 'partially_filled'):
+            print(f"    FILLED @ ${filled_price:.2f}")
+            return (result, filled_price)
+
+        print(f"    Market order status: {order_status} (expected fill)")
+        return (result, filled_price)
 
     async def _execute_stepped_entry(
         self,
@@ -694,6 +754,93 @@ class TradingLoop:
 
         return None
 
+    async def _execute_single_entry(
+        self,
+        candidate,
+        qty: int,
+        current_vix: float,
+        index: int,
+        total_count: int,
+    ) -> bool:
+        """Execute a single entry order. Safe for asyncio.gather().
+
+        Args:
+            candidate: The OptionContract to trade
+            qty: Number of contracts (pre-sized by sizing pass)
+            current_vix: Current VIX level
+            index: 1-based position in the entry queue (for logging)
+            total_count: Total number of entries being attempted
+
+        Returns:
+            True if entry was filled successfully.
+        """
+        total_collateral = candidate.collateral_required * qty
+        target_val = self.config.starting_cash * self.config.max_position_pct
+        spread = candidate.ask - candidate.bid if candidate.ask and candidate.bid else 0
+        delta_str = f"{abs(candidate.delta):.3f}" if candidate.delta else "N/A"
+
+        print(f"\n  [{index}/{total_count}] ENTERING {candidate.underlying}: {candidate.symbol}")
+        print(f"    Stock: ${candidate.stock_price:.2f} | Strike: ${candidate.strike:.2f} | DTE: {candidate.dte}")
+        print(f"    Bid: ${candidate.bid:.2f} | Ask: ${candidate.ask:.2f} | Mid: ${candidate.mid:.2f} | Spread: ${spread:.2f}")
+        print(f"    Delta: {delta_str} | IV: {candidate.implied_volatility:.1%} | Daily: {candidate.daily_return_on_collateral:.4%}")
+        print(f"    Qty: {qty} | Collateral: ${total_collateral:,.0f} (target: ${target_val:,.0f})")
+
+        # Execute entry
+        if self.config.entry_order_type == "market":
+            entry_result = await self._execute_market_entry(
+                candidate=candidate, qty=qty,
+            )
+        else:
+            entry_result = await self._execute_stepped_entry(
+                candidate=candidate, qty=qty, current_vix=current_vix,
+            )
+
+        # Capture step log immediately (no await between entry return and copy,
+        # so this is safe even when multiple entries run via asyncio.gather)
+        step_log = list(self._last_step_log)
+
+        # Log order attempt
+        self.logger.log_order_attempt(
+            action="entry",
+            symbol=candidate.underlying,
+            contract=candidate.symbol,
+            steps=step_log,
+            outcome="filled" if entry_result is not None else "exhausted",
+            filled_price=entry_result[1] if entry_result else None,
+            start_price=candidate.mid,
+            floor_price=candidate.bid,
+            qty=qty,
+        )
+
+        if entry_result is not None:
+            result, filled_price = entry_result
+            improvement = filled_price - candidate.bid
+
+            self.metadata.record_entry(
+                option_symbol=candidate.symbol,
+                underlying=candidate.underlying,
+                strike=candidate.strike,
+                expiration=candidate.expiration.isoformat(),
+                entry_delta=candidate.delta,
+                entry_iv=candidate.implied_volatility,
+                entry_vix=current_vix,
+                entry_stock_price=candidate.stock_price,
+                entry_premium=filled_price,
+                entry_daily_return=candidate.daily_return_on_collateral,
+                dte_at_entry=candidate.dte,
+                quantity=-qty,
+                entry_order_id=result.order_id,
+            )
+            print(f"    FILLED: {candidate.symbol}")
+            print(f"      {qty} contracts @ ${filled_price:.2f} (bid was ${candidate.bid:.2f}, improvement: ${improvement:+.2f})")
+            print(f"      Total premium: ${filled_price * qty * 100:,.2f} | Collateral: ${total_collateral:,.0f}")
+            return True
+        else:
+            if self.config.entry_order_type == "market":
+                print(f"    FAILED: Market order entry failed for {candidate.underlying}")
+            else:
+                print(f"    FAILED: Entry exhausted for {candidate.underlying} after {self.config.entry_max_steps} steps")
+            return False
 
     async def _execute_stepped_exit(
         self,
@@ -822,100 +969,6 @@ class TradingLoop:
 
         return None
 
-    async def _execute_stepped_stop_exit(
-        self,
-        position,
-    ) -> Tuple['OrderResult', float]:
-        """Execute a stepped stop-loss exit with market order fallback.
-
-        Starts at bid + offset% of spread, steps up by step_pct of spread.
-        After max_steps retries, falls back to market order.
-
-        Returns:
-            Tuple of (OrderResult, filled_price) -- always fills due to market fallback.
-        """
-        cfg = self.config
-        option_symbol = position.option_symbol
-        qty = abs(position.quantity)
-
-        # Fetch current snapshot
-        snapshots = await _arun(self.data_manager.options_fetcher.get_option_snapshots, [option_symbol])
-        if option_symbol not in snapshots:
-            print(f"    Stepped stop: no snapshot, using market order")
-            result = await _arun(self.execution.buy_to_close, option_symbol=option_symbol, quantity=qty, limit_price=None)
-            return (result, 0.0)
-
-        snap = snapshots[option_symbol]
-        bid = float(snap.get('bid', 0) or 0)
-        ask = float(snap.get('ask', 0) or 0)
-
-        if bid <= 0 or ask <= 0:
-            print(f"    Stepped stop: no bid/ask, using market order")
-            result = await _arun(self.execution.buy_to_close, option_symbol=option_symbol, quantity=qty, limit_price=None)
-            return (result, 0.0)
-
-        spread = ask - bid
-        limit_price = round(bid + cfg.stop_exit_start_offset_pct * spread, 2)
-
-        print(f"    Stepped stop: start=${limit_price:.2f}, "
-              f"bid=${bid:.2f}, ask=${ask:.2f}, spread=${spread:.2f}")
-
-        for step in range(cfg.stop_exit_max_steps + 1):
-            print(f"    Stop step {step}/{cfg.stop_exit_max_steps}: limit @ ${limit_price:.2f}")
-
-            result = await _arun(
-                self.execution.buy_to_close,
-                option_symbol=option_symbol,
-                quantity=qty,
-                limit_price=limit_price,
-            )
-
-            if not result.success:
-                print(f"    Stop step {step}: submission failed, using market order")
-                result = await _arun(self.execution.buy_to_close, option_symbol=option_symbol, quantity=qty, limit_price=None)
-                return (result, 0.0)
-
-            order_id = result.order_id
-            await asyncio.sleep(cfg.stop_exit_step_interval)
-
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status['status'] in ('filled', 'partially_filled'):
-                filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
-                print(f"    Stop step {step}: FILLED @ ${filled_price:.2f}")
-                return (result, filled_price)
-
-            # Cancel and retry or fallback
-            await _arun(self.execution.cancel_order, order_id)
-            await asyncio.sleep(1)
-
-            # Check if filled during cancel
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status['status'] in ('filled', 'partially_filled'):
-                filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
-                print(f"    Stop step {step}: filled during cancel @ ${filled_price:.2f}")
-                return (result, filled_price)
-
-            if step >= cfg.stop_exit_max_steps:
-                break
-
-            # Re-fetch snapshot for fresh pricing
-            snapshots = await _arun(self.data_manager.options_fetcher.get_option_snapshots, [option_symbol])
-            if option_symbol in snapshots:
-                snap = snapshots[option_symbol]
-                bid = float(snap.get('bid', 0) or 0)
-                ask = float(snap.get('ask', 0) or 0)
-                spread = ask - bid if ask > bid else spread
-
-            # Step up
-            next_step = step + 1
-            limit_price = round(bid + (cfg.stop_exit_start_offset_pct + next_step * cfg.stop_exit_step_pct) * spread, 2)
-            limit_price = min(limit_price, ask)  # Never exceed ask
-
-        # All steps exhausted -- fall back to market
-        print(f"    Stepped stop exhausted after {cfg.stop_exit_max_steps} steps, falling back to market order")
-        result = await _arun(self.execution.buy_to_close, option_symbol=option_symbol, quantity=qty, limit_price=None)
-        return (result, 0.0)
-
     async def _check_assignments(self) -> List[Tuple]:
         """Detect assignments by comparing internal portfolio against Alpaca holdings.
 
@@ -989,6 +1042,51 @@ class TradingLoop:
         return assigned
 
 
+    async def _fetch_symbol_options(self, symbol: str) -> Optional[dict]:
+        """Fetch options chain data for a single symbol. Safe for asyncio.gather()."""
+        async with self._api_semaphore:
+            try:
+                stock_price = await _arun(self.data_manager.equity_fetcher.get_current_price, symbol)
+
+                sma_ceiling = None
+                if self.config.max_strike_mode == "sma" and hasattr(self, '_last_scan_results'):
+                    for sr in self._last_scan_results:
+                        if sr.symbol == symbol:
+                            sma_ceiling = getattr(sr.equity_result, f"sma_{self.config.max_strike_sma_period}", None)
+                            break
+
+                puts = await _arun(
+                    self.data_manager.options_fetcher.get_puts_chain,
+                    symbol, stock_price, self.config, sma_ceiling=sma_ceiling
+                )
+
+                price_history = await _arun(
+                    self.data_manager.equity_fetcher.get_close_history,
+                    [symbol], days=self.config.history_days
+                )
+                if symbol in price_history:
+                    prices = price_history[symbol]
+                    for put in puts:
+                        at_or_below = prices[prices <= put.strike]
+                        if at_or_below.empty:
+                            put.days_since_strike = 999
+                        else:
+                            last_date = at_or_below.index[-1]
+                            put.days_since_strike = (prices.index[-1] - last_date).days
+
+                ranked, filter_results = await _arun(self.scanner.options_filter.filter_and_rank, puts)
+
+                return {
+                    "symbol": symbol,
+                    "stock_price": stock_price,
+                    "puts_count": len(puts),
+                    "ranked": ranked,
+                    "filter_results": filter_results,
+                }
+            except Exception as e:
+                print(f"  Error fetching options for {symbol}: {e}")
+                return None
+
     async def scan_and_enter(self, deployable_cash: float) -> int:
         """
         Scan for new opportunities and enter positions.
@@ -1028,63 +1126,44 @@ class TradingLoop:
         all_candidates = []
         all_filter_results_by_symbol = {}  # symbol -> (stock_price, puts_count, filter_results, ranked)
         all_failure_counts = {}
+
+        # Fetch options chains in parallel (capped by semaphore)
+        fetch_results = await asyncio.gather(
+            *[self._fetch_symbol_options(sym) for sym in symbols_to_check]
+        )
+
+        for result in fetch_results:
+            if result is None:
+                continue
+            symbol = result["symbol"]
+            ranked = result["ranked"]
+            filter_results = result["filter_results"]
+
+            all_candidates.extend(ranked[:self.config.max_candidates_per_symbol])
+            all_filter_results_by_symbol[symbol] = (
+                result["stock_price"], result["puts_count"], filter_results, ranked
+            )
+
+            self.logger.log_options_scan(self._cycle_count, symbol, filter_results)
+
+            # Tally failure reasons
+            for r in filter_results:
+                for reason in r.failure_reasons:
+                    if "Daily return" in reason:
+                        key = "Premium too low"
+                    elif "Strike" in reason:
+                        key = "Strike too high"
+                    elif "Delta" in reason:
+                        key = "Delta out of range" if "outside" in reason else "Delta unavailable"
+                    elif "DTE" in reason:
+                        key = "DTE out of range"
+                    else:
+                        key = reason
+                    all_failure_counts[key] = all_failure_counts.get(key, 0) + 1
         
-        for symbol in symbols_to_check:
-            try:
-                stock_price = await _arun(self.data_manager.equity_fetcher.get_current_price, symbol)
-                
-                # Get SMA ceiling for options chain if configured
-                sma_ceiling = None
-                if self.config.max_strike_mode == "sma" and hasattr(self, '_last_scan_results'):
-                    for sr in self._last_scan_results:
-                        if sr.symbol == symbol:
-                            sma_ceiling = getattr(sr.equity_result, f"sma_{self.config.max_strike_sma_period}", None)
-                            break
-                
-                puts = await _arun(
-                    self.data_manager.options_fetcher.get_puts_chain,
-                    symbol, stock_price, self.config, sma_ceiling=sma_ceiling
-                )
-                
-                # Enrich with days_since_strike from price history
-                price_history = await _arun(
-                    self.data_manager.equity_fetcher.get_close_history,
-                    [symbol], days=self.config.history_days
-                )
-                if symbol in price_history:
-                    prices = price_history[symbol]
-                    for put in puts:
-                        at_or_below = prices[prices <= put.strike]
-                        if at_or_below.empty:
-                            put.days_since_strike = 999
-                        else:
-                            last_date = at_or_below.index[-1]
-                            put.days_since_strike = (prices.index[-1] - last_date).days
-                
-                ranked, filter_results = await _arun(self.scanner.options_filter.filter_and_rank, puts)
-                all_candidates.extend(ranked[:self.config.max_candidates_per_symbol])
-                all_filter_results_by_symbol[symbol] = (stock_price, len(puts), filter_results, ranked)
-                
-                # Log options scan for this symbol
-                self.logger.log_options_scan(self._cycle_count, symbol, filter_results)
-                
-                # Tally failure reasons
-                for r in filter_results:
-                    for reason in r.failure_reasons:
-                        if "Daily return" in reason:
-                            key = "Premium too low"
-                        elif "Strike" in reason:
-                            key = "Strike too high"
-                        elif "Delta" in reason:
-                            key = "Delta out of range" if "outside" in reason else "Delta unavailable"
-                        elif "DTE" in reason:
-                            key = "DTE out of range"
-                        else:
-                            key = reason
-                        all_failure_counts[key] = all_failure_counts.get(key, 0) + 1
-            except Exception as e:
-                print(f"  Error fetching options for {symbol}: {e}")
-        
+        # Flush all options scan logs in one batch
+        self.logger.flush()
+
         # Print options scan summary per symbol
         passing_both_count = sum(1 for s, (_, _, _, ranked) in all_filter_results_by_symbol.items() if ranked)
         print(f"  Passed equity + options filter:            {passing_both_count}")
@@ -1098,7 +1177,7 @@ class TradingLoop:
             best_per_ticker.append(group_list[0])
 
         # Re-rank across tickers
-        best_per_ticker.sort(key=lambda c: self._get_sort_key(c), reverse=True)
+        best_per_ticker.sort(key=lambda c: self._get_universe_sort_key(c), reverse=True)
         
         # Check earnings & dividends only for final candidates
         candidate_symbols = list(set(c.underlying for c in best_per_ticker)) if best_per_ticker else []
@@ -1226,7 +1305,7 @@ class TradingLoop:
             
             if tickers:
                 print(f"\n  {'='*120}")
-                print(f"  Best Pick Per Ticker by Ranking Mode   (active mode: {self.config.contract_rank_mode})")
+                print(f"  Best Pick Per Ticker by Ranking Mode   (per-ticker: {self.config.contract_rank_mode}, universe: {self.config.universe_rank_mode})")
                 print(f"  {'='*120}")
                 print(f"    {'Ticker':<8} | {'daily_ret/delta':<30} | {'days_since_strike':<30} | {'daily_ret':<30} | {'lowest_strike':<30}")
                 print(f"    {'-'*8}-+-{'-'*30}-+-{'-'*30}-+-{'-'*30}-+-{'-'*30}")
@@ -1262,86 +1341,49 @@ class TradingLoop:
         print(f"\n  {'='*80}")
         print(f"  ORDER ENTRY \u2014 {len(candidates)} candidate(s)")
         print(f"  {'='*80}")
-                                
-        entered = 0
-        current_vix = await _arun(self.vix_fetcher.get_current_vix)
-        
-        for i, candidate in enumerate(candidates, 1):
 
+        current_vix = await _arun(self.vix_fetcher.get_current_vix)
+
+        # Phase 1: Sequential sizing pass (pure arithmetic, no API calls)
+        available_cash = min(await _arun(self.alpaca_manager.compute_available_capital), deployable_cash)
+        remaining_cash = available_cash
+        sized_orders = []
+
+        print(f"\n  Sizing pass: ${remaining_cash:,.0f} available")
+
+        for i, candidate in enumerate(candidates, 1):
             # Guard: skip contracts with missing Greeks
             if candidate.delta is None or candidate.implied_volatility is None:
-                print(f"\n  [{i}/{len(candidates)}] \u26a0 Skipping {candidate.underlying}: missing Greeks (delta={candidate.delta}, iv={candidate.implied_volatility})")
+                print(f"  [{i}/{len(candidates)}] Skipping {candidate.underlying}: missing Greeks (delta={candidate.delta}, iv={candidate.implied_volatility})")
                 continue
 
-            # Compute dynamic quantity
-            available_cash = min(await _arun(self.alpaca_manager.compute_available_capital), deployable_cash)
-            qty = self.compute_target_quantity(candidate.collateral_required, available_cash)
-            total_collateral = candidate.collateral_required * qty
-
-            # Check if we can add this position
-            if available_cash < total_collateral:
-                print(f"\n  [{i}/{len(candidates)}] \u26a0 Skipping {candidate.underlying}: insufficient cash for ${total_collateral:,.0f} collateral")
+            collateral_per_contract = candidate.collateral_required
+            if remaining_cash < collateral_per_contract:
+                print(f"  [{i}/{len(candidates)}] Skipping {candidate.underlying}: insufficient cash (need ${collateral_per_contract:,.0f}, have ${remaining_cash:,.0f})")
                 continue
 
-            target_val = self.config.starting_cash * self.config.max_position_pct
-            spread = candidate.ask - candidate.bid if candidate.ask and candidate.bid else 0
-            delta_str = f"{abs(candidate.delta):.3f}" if candidate.delta else "N/A"
-            
-            print(f"\n  [{i}/{len(candidates)}] ENTERING {candidate.underlying}: {candidate.symbol}")
-            print(f"    Stock: ${candidate.stock_price:.2f} | Strike: ${candidate.strike:.2f} | DTE: {candidate.dte}")
-            print(f"    Bid: ${candidate.bid:.2f} | Ask: ${candidate.ask:.2f} | Mid: ${candidate.mid:.2f} | Spread: ${spread:.2f}")
-            print(f"    Delta: {delta_str} | IV: {candidate.implied_volatility:.1%} | Daily: {candidate.daily_return_on_collateral:.4%}")
-            print(f"    Qty: {qty} | Collateral: ${total_collateral:,.0f} (target: ${target_val:,.0f}) | Cash avail: ${available_cash:,.0f}")
+            qty = self.compute_target_quantity(collateral_per_contract, remaining_cash)
+            total_collateral = collateral_per_contract * qty
 
-            # Execute stepped entry
-            entry_result = await self._execute_stepped_entry(
-                candidate=candidate,
-                qty=qty,
-                current_vix=current_vix,
-            )
+            sized_orders.append((candidate, qty))
+            remaining_cash -= total_collateral
+            print(f"  [{i}/{len(candidates)}] {candidate.underlying}: {qty} contracts, ${total_collateral:,.0f} collateral, ${remaining_cash:,.0f} remaining")
 
-            # Log order attempt
-            self.logger.log_order_attempt(
-                action="entry",
-                symbol=candidate.underlying,
-                contract=candidate.symbol,
-                steps=self._last_step_log,
-                outcome="filled" if entry_result is not None else "exhausted",
-                filled_price=entry_result[1] if entry_result else None,
-                start_price=candidate.mid,
-                floor_price=candidate.bid,
-                qty=qty,
-            )
+        if not sized_orders:
+            print(f"\n  No orders sized (insufficient cash or missing Greeks)")
+            return 0
 
-            if entry_result is not None:
-                result, filled_price = entry_result
-                improvement = filled_price - candidate.bid
-                
-                self.metadata.record_entry(
-                    option_symbol=candidate.symbol,
-                    underlying=candidate.underlying,
-                    strike=candidate.strike,
-                    expiration=candidate.expiration.isoformat(),
-                    entry_delta=candidate.delta,
-                    entry_iv=candidate.implied_volatility,
-                    entry_vix=current_vix,
-                    entry_stock_price=candidate.stock_price,
-                    entry_premium=filled_price,
-                    entry_daily_return=candidate.daily_return_on_collateral,
-                    dte_at_entry=candidate.dte,
-                    quantity=-qty,
-                    entry_order_id=result.order_id,
-                )
-                print(f"    \u2713 FILLED: {candidate.symbol}")
-                print(f"      {qty} contracts @ ${filled_price:.2f} (bid was ${candidate.bid:.2f}, improvement: ${improvement:+.2f})")
-                print(f"      Total premium: ${filled_price * qty * 100:,.2f} | Collateral: ${total_collateral:,.0f}")
-                entered += 1
+        print(f"\n  Sized {len(sized_orders)} orders, ${available_cash - remaining_cash:,.0f} allocated, ${remaining_cash:,.0f} reserved")
 
-            else:
-                print(f"    \u2717 FAILED: Entry exhausted for {candidate.underlying} after {self.config.entry_max_steps} steps")
+        # Phase 2: Parallel execution
+        print(f"\n  Executing {len(sized_orders)} entries in parallel...")
+        results = await asyncio.gather(
+            *[self._execute_single_entry(candidate, qty, current_vix, i, len(sized_orders))
+              for i, (candidate, qty) in enumerate(sized_orders, 1)]
+        )
 
-
-        print(f"\n  Entry complete: {entered}/{len(candidates)} positions opened")
+        entered = sum(1 for r in results if r)
+        print(f"\n  Entry complete: {entered}/{len(sized_orders)} positions opened")
         return entered
 
     async def run_cycle(self) -> dict:
@@ -1418,7 +1460,8 @@ class TradingLoop:
                 print(f"🚨 GLOBAL VIX STOP TRIGGERED - VIX: {current_vix:.2f}")
                 summary['global_vix_stop'] = True
 
-                # Close all positions
+                # Close all positions (parallel)
+                exit_tasks = []
                 for alpaca_pos in await self._get_option_positions():
                     meta = self.metadata.get(alpaca_pos.symbol)
                     if meta is None:
@@ -1430,17 +1473,23 @@ class TradingLoop:
                         details=f"Global VIX stop: {current_vix:.2f}",
                         current_values={'current_vix': current_vix}
                     )
-                    if await self.execute_exit(position, result, current_premium=0.0):
-                        summary['exits'] += 1
+                    exit_tasks.append(self.execute_exit(position, result, current_premium=0.0))
+
+                if exit_tasks:
+                    exit_results = await asyncio.gather(*exit_tasks)
+                    summary['exits'] = sum(1 for r in exit_results if r)
 
                 return summary
 
             # Monitor existing positions
             exits_needed = await self.monitor_positions(current_vix)
 
-            for position, risk_result, exit_premium in exits_needed:
-                if await self.execute_exit(position, risk_result, current_premium=exit_premium):
-                    summary['exits'] += 1
+            if exits_needed:
+                exit_results = await asyncio.gather(
+                    *[self.execute_exit(pos, rr, current_premium=ep)
+                      for pos, rr, ep in exits_needed]
+                )
+                summary['exits'] = sum(1 for r in exit_results if r)
 
             # Scan for new entries (only if market is open and not monitor-only)
             if await self.is_market_open() and deployable_cash > 0 and not self._monitor_only:
@@ -1488,6 +1537,7 @@ class TradingLoop:
 
         # Log config snapshot for the day
         self.logger.log_config(self.config)
+        self.logger.flush()
 
         print("\n" + "=" * 60)
         print("CSP TRADING LOOP STARTED")
@@ -1500,7 +1550,7 @@ class TradingLoop:
                 cycle_count += 1
                 self._cycle_count = cycle_count
 
-                print(f"\n--- Cycle {cycle_count} @ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
+                print(f"\n--- Cycle {cycle_count} @ {datetime.now(self.eastern).strftime('%Y-%m-%d %H:%M:%S %Z')} ---")
 
                 # Reset daily state if new trading day
                 today = datetime.now(self.eastern).date()
@@ -1536,6 +1586,7 @@ class TradingLoop:
                     options_checked=self._equity_passing or [],
                     failure_tally=summary.get('failure_tally', {}),
                 )
+                self.logger.flush()
 
                 if 'portfolio' in summary:
                     # In monitor-only mode, stop once all positions are closed

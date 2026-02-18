@@ -166,7 +166,7 @@ class OptionsDataFetcher:
         for i in range(0, len(option_symbols), chunk_size):
             chunk = option_symbols[i : i + chunk_size]
             try:
-                request = OptionLatestQuoteRequest(symbol_or_symbols=chunk)
+                request = OptionLatestQuoteRequest(symbol_or_symbols=chunk, feed="indicative")
                 quotes = self.data_client.get_option_latest_quote(request)
                 for symbol, quote in quotes.items():
                     all_quotes[symbol] = {
@@ -191,7 +191,7 @@ class OptionsDataFetcher:
         for i in range(0, len(option_symbols), chunk_size):
             chunk = option_symbols[i : i + chunk_size]
             try:
-                request = OptionSnapshotRequest(symbol_or_symbols=chunk)
+                request = OptionSnapshotRequest(symbol_or_symbols=chunk, feed="indicative")
                 snapshots = self.data_client.get_option_snapshot(request)
 
                 for symbol, snapshot in snapshots.items():
@@ -213,6 +213,7 @@ class OptionsDataFetcher:
                     bar_request = OptionBarsRequest(
                         symbol_or_symbols=chunk,
                         timeframe=TimeFrame.Day,
+                        feed="indicative",
                     )
                     bars = self.data_client.get_option_bars(bar_request)
                     for symbol in chunk:

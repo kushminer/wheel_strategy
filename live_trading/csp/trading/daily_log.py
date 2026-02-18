@@ -1,6 +1,7 @@
 """Daily JSON log for strategy activity."""
 
 import json
+import time
 from datetime import date, datetime
 from typing import Dict, List
 
@@ -8,7 +9,12 @@ from csp.storage import LocalStorage, StorageBackend
 
 
 class DailyLog:
-    """Single-file daily JSON log."""
+    """Single-file daily JSON log.
+
+    Accumulates log entries in memory and only writes to the storage
+    backend when flush() is called. This avoids GCS rate-limit errors
+    (1 write/sec/object) that occur when logging many events rapidly.
+    """
 
     def __init__(self, log_dir: str = "logs", backend: StorageBackend = None):
         self.log_dir = log_dir
@@ -16,6 +22,7 @@ class DailyLog:
         self._backend.mkdir(self.log_dir)
         self._data = None
         self._current_date = None
+        self._dirty = False
 
     def _get_path(self) -> str:
         return f"{self.log_dir}/{date.today().isoformat()}.json"
@@ -42,7 +49,23 @@ class DailyLog:
         self._current_date = today
 
     def _save(self):
-        self._backend.write(self._get_path(), json.dumps(self._data, indent=2))
+        """Write current data to storage with retry on rate-limit errors."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self._backend.write(self._get_path(), json.dumps(self._data, indent=2))
+                self._dirty = False
+                return
+            except Exception as e:
+                if "429" in str(e) and attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                else:
+                    raise
+
+    def flush(self):
+        """Flush accumulated log data to storage. Call at cycle boundaries."""
+        if self._dirty and self._data is not None:
+            self._save()
 
     def log_config(self, config):
         """Snapshot config at start of day."""
@@ -67,11 +90,6 @@ class DailyLog:
             "entry_step_pct": config.entry_step_pct,
             "entry_max_steps": config.entry_max_steps,
             "entry_refetch_snapshot": config.entry_refetch_snapshot,
-            "stop_loss_order_type": config.stop_loss_order_type,
-            "stop_exit_start_offset_pct": config.stop_exit_start_offset_pct,
-            "stop_exit_step_pct": config.stop_exit_step_pct,
-            "stop_exit_step_interval": config.stop_exit_step_interval,
-            "stop_exit_max_steps": config.stop_exit_max_steps,
             "exit_start_price": config.exit_start_price,
             "exit_step_interval": config.exit_step_interval,
             "exit_step_pct": config.exit_step_pct,
@@ -85,8 +103,10 @@ class DailyLog:
             "delta_absolute_stop": config.delta_absolute_stop,
             "stock_drop_stop_pct": config.stock_drop_stop_pct,
             "vix_spike_multiplier": config.vix_spike_multiplier,
+            "contract_rank_mode": config.contract_rank_mode,
+            "universe_rank_mode": config.universe_rank_mode,
         }
-        self._save()
+        self._dirty = True
 
     def log_equity_scan(self, scan_results, passing_symbols):
         """Log daily equity scan (once per day)."""
@@ -109,7 +129,7 @@ class DailyLog:
             "passed": passing_symbols,
             "results": results,
         }
-        self._save()
+        self._dirty = True
 
     def log_options_scan(self, cycle: int, symbol: str, filter_results: list):
         """Log options filter results for a symbol."""
@@ -143,7 +163,7 @@ class DailyLog:
             "contracts_passed": sum(1 for r in filter_results if r.passes),
             "contracts": contracts,
         })
-        self._save()
+        self._dirty = True
 
     def log_cycle(self, cycle: int, summary: dict,
                   options_checked: list = None,
@@ -167,7 +187,7 @@ class DailyLog:
             "collateral": round(p.get("total_collateral", 0), 0),
             "errors": summary.get("errors", []),
         })
-        self._save()
+        self._dirty = True
 
     def log_order_attempt(
         self,
@@ -193,7 +213,7 @@ class DailyLog:
         }
         entry.update(kwargs)
         self._data["order_attempts"].append(entry)
-        self._save()
+        self._dirty = True
 
     def log_shutdown(self, reason: str, total_cycles: int, portfolio_summary: dict):
         """Log end-of-day shutdown."""
@@ -205,7 +225,8 @@ class DailyLog:
             "final_positions": portfolio_summary.get("active_positions", 0),
             "final_collateral": round(portfolio_summary.get("total_collateral", 0), 0),
         }
-        self._save()
+        self._dirty = True
+        self.flush()  # Always persist shutdown
 
     @property
     def today_path(self) -> str:

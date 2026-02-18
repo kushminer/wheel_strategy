@@ -19,14 +19,13 @@ class EquityDataFetcher:
         symbols: List[str],
         days: int = 60,
     ) -> Dict[str, pd.Series]:
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=int(days * 1.5))
+        start_date = datetime.now() - timedelta(days=int(days * 1.5))
 
         request = StockBarsRequest(
             symbol_or_symbols=symbols,
             timeframe=TimeFrame.Day,
             start=start_date,
-            end=end_date,
+            feed="iex",
         )
 
         bars = self.client.get_stock_bars(request)

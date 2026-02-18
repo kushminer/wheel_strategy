@@ -46,12 +46,9 @@ def _make_config(**overrides):
         entry_step_interval=0,
         exit_max_steps=0,
         exit_step_interval=0,
-        stop_exit_max_steps=0,
-        stop_exit_step_interval=0,
         vix_spike_multiplier=1.15,
         close_before_expiry_days=0,
         exit_on_missing_delta=False,
-        stop_loss_order_type="market",
         max_position_pct=0.10,
         max_contracts_per_ticker=5,
         contract_rank_mode="lowest_strike_price",
@@ -297,6 +294,96 @@ class TestMonitorPositions:
         assert premium == 0.10
 
 
+# ── Parallel Monitor Positions ─────────────────────────────────
+
+
+class TestParallelMonitorPositions:
+    """monitor_positions: positions are checked in parallel via asyncio.gather."""
+
+    async def test_parallel_monitor_checks_all_positions(self, tmp_path):
+        """All positions are checked concurrently; risk_manager called for each."""
+        loop, comp = _make_loop(tmp_path=tmp_path)
+
+        symbols = ["AAPL260220P00220000", "MSFT260220P00400000", "GOOG260220P00170000"]
+        positions = []
+        for sym in symbols:
+            underlying = sym[:4]
+            pos = make_alpaca_position(sym, qty=-1, side="short")
+            positions.append(pos)
+            loop.metadata.record_entry(
+                option_symbol=sym,
+                underlying=underlying, strike=220.0,
+                expiration=(date.today() + timedelta(days=5)).isoformat(),
+                entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
+                entry_stock_price=230.0, entry_premium=1.50,
+                entry_daily_return=0.0015, dte_at_entry=7, quantity=-1,
+                entry_order_id=f"entry-{underlying}",
+            )
+
+        comp['alpaca_manager'].trading_client.get_all_positions.return_value = positions
+
+        def mock_snapshots(option_symbols):
+            return {sym: {'bid': 1.20, 'ask': 1.40, 'delta': -0.30} for sym in option_symbols}
+
+        comp['data_manager'].options_fetcher.get_option_snapshots.side_effect = mock_snapshots
+
+        comp['risk_manager'].evaluate_position.return_value = RiskCheckResult(
+            should_exit=False,
+            exit_reason=None,
+            details="All checks passed",
+            current_values={},
+        )
+
+        exits = await loop.monitor_positions(current_vix=18.0)
+        assert len(exits) == 0
+        assert comp['risk_manager'].evaluate_position.call_count == 3
+
+    async def test_parallel_monitor_partial_failure(self, tmp_path):
+        """One position snapshot raises exception; other positions still evaluated."""
+        loop, comp = _make_loop(tmp_path=tmp_path)
+
+        symbols = ["AAPL260220P00220000", "MSFT260220P00400000"]
+        positions = []
+        for sym in symbols:
+            underlying = sym[:4]
+            pos = make_alpaca_position(sym, qty=-1, side="short")
+            positions.append(pos)
+            loop.metadata.record_entry(
+                option_symbol=sym,
+                underlying=underlying, strike=220.0,
+                expiration=(date.today() + timedelta(days=5)).isoformat(),
+                entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
+                entry_stock_price=230.0, entry_premium=1.50,
+                entry_daily_return=0.0015, dte_at_entry=7, quantity=-1,
+                entry_order_id=f"entry-{underlying}",
+            )
+
+        comp['alpaca_manager'].trading_client.get_all_positions.return_value = positions
+
+        call_count = 0
+        def mock_snapshots(option_symbols):
+            nonlocal call_count
+            call_count += 1
+            sym = option_symbols[0]
+            if "MSFT" in sym:
+                raise Exception("API timeout")
+            return {sym: {'bid': 1.20, 'ask': 1.40, 'delta': -0.30}}
+
+        comp['data_manager'].options_fetcher.get_option_snapshots.side_effect = mock_snapshots
+
+        comp['risk_manager'].evaluate_position.return_value = RiskCheckResult(
+            should_exit=True,
+            exit_reason=ExitReason.DELTA_ABSOLUTE,
+            details="Delta 0.30 >= 0.40",
+            current_values={},
+        )
+
+        exits = await loop.monitor_positions(current_vix=18.0)
+        # AAPL should succeed, MSFT should fail gracefully
+        assert len(exits) == 1
+        assert comp['risk_manager'].evaluate_position.call_count == 1
+
+
 # ── Assignment Detection ───────────────────────────────────────
 
 
@@ -403,8 +490,7 @@ class TestExecuteExit:
         comp['execution'].sell_to_open.assert_not_called()
 
     async def test_stop_loss_market_order(self, tmp_path):
-        config = _make_config(stop_loss_order_type="market")
-        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+        loop, comp = _make_loop(tmp_path=tmp_path)
 
         loop.metadata.record_entry(
             option_symbol="AAPL260220P00220000",
@@ -431,38 +517,107 @@ class TestExecuteExit:
         # Market order: limit_price should be None
         assert call_kwargs.kwargs.get('limit_price') is None or call_kwargs[1].get('limit_price') is None
 
-    async def test_stop_loss_bid_order(self, tmp_path):
-        config = _make_config(stop_loss_order_type="bid")
-        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
 
-        loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
-            underlying="AAPL", strike=220.0,
-            expiration=(date.today() + timedelta(days=5)).isoformat(),
-            entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
-            entry_stock_price=230.0, entry_premium=1.50,
-            entry_daily_return=0.0015, dte_at_entry=7, quantity=-1,
-            entry_order_id="entry-001",
-        )
 
-        # Provide snapshot with bid
-        comp['data_manager'].options_fetcher.get_option_snapshots.return_value = {
-            "AAPL260220P00220000": {'bid': 2.00, 'ask': 2.50},
-        }
+# ── Parallel Exit Execution ───────────────────────────────────
 
-        position = make_position_proxy()
-        position.calculate_pnl = lambda ep: (1.50 - ep) * 100
+
+class TestParallelExitExecution:
+    """Exit orders execute in parallel via asyncio.gather."""
+
+    async def test_parallel_exits_all_succeed(self, tmp_path):
+        """Multiple exits run concurrently, all succeed."""
+        loop, comp = _make_loop(tmp_path=tmp_path)
+
+        # Set up two positions
+        for sym, underlying in [("AAPL260220P00220000", "AAPL"), ("MSFT260220P00400000", "MSFT")]:
+            loop.metadata.record_entry(
+                option_symbol=sym,
+                underlying=underlying, strike=220.0,
+                expiration=(date.today() + timedelta(days=5)).isoformat(),
+                entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
+                entry_stock_price=230.0, entry_premium=1.50,
+                entry_daily_return=0.0015, dte_at_entry=7, quantity=-1,
+                entry_order_id=f"entry-{underlying}",
+            )
+
+        positions = [
+            make_position_proxy(symbol="AAPL", option_symbol="AAPL260220P00220000"),
+            make_position_proxy(symbol="MSFT", option_symbol="MSFT260220P00400000"),
+        ]
+        for pos in positions:
+            pos.calculate_pnl = lambda ep, _p=pos: (_p.entry_premium - ep) * abs(_p.quantity) * 100
 
         risk_result = RiskCheckResult(
-            should_exit=True, exit_reason=ExitReason.DELTA_STOP,
-            details="Delta doubled", current_values={},
+            should_exit=True,
+            exit_reason=ExitReason.DELTA_ABSOLUTE,
+            details="Delta exceeded",
+            current_values={},
         )
 
-        result = await loop.execute_exit(position, risk_result, current_premium=2.50)
-        assert result is True
-        comp['execution'].buy_to_close.assert_called_once()
-        call_kwargs = comp['execution'].buy_to_close.call_args
-        assert call_kwargs.kwargs.get('limit_price') == 2.00 or call_kwargs[1].get('limit_price') == 2.00
+        comp['execution'].buy_to_close.return_value = OrderResult(
+            success=True, order_id="exit-001", message="OK",
+        )
+
+        exits_needed = [(pos, risk_result, 2.50) for pos in positions]
+
+        import asyncio
+        exit_results = await asyncio.gather(
+            *[loop.execute_exit(pos, rr, current_premium=ep)
+              for pos, rr, ep in exits_needed]
+        )
+        total_exits = sum(1 for r in exit_results if r)
+        assert total_exits == 2
+        assert comp['execution'].buy_to_close.call_count == 2
+
+    async def test_parallel_exits_partial_failure(self, tmp_path):
+        """One exit fails, other succeeds; count reflects partial success."""
+        loop, comp = _make_loop(tmp_path=tmp_path)
+
+        for sym, underlying in [("AAPL260220P00220000", "AAPL"), ("MSFT260220P00400000", "MSFT")]:
+            loop.metadata.record_entry(
+                option_symbol=sym,
+                underlying=underlying, strike=220.0,
+                expiration=(date.today() + timedelta(days=5)).isoformat(),
+                entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
+                entry_stock_price=230.0, entry_premium=1.50,
+                entry_daily_return=0.0015, dte_at_entry=7, quantity=-1,
+                entry_order_id=f"entry-{underlying}",
+            )
+
+        positions = [
+            make_position_proxy(symbol="AAPL", option_symbol="AAPL260220P00220000"),
+            make_position_proxy(symbol="MSFT", option_symbol="MSFT260220P00400000"),
+        ]
+        for pos in positions:
+            pos.calculate_pnl = lambda ep, _p=pos: (_p.entry_premium - ep) * abs(_p.quantity) * 100
+
+        risk_result = RiskCheckResult(
+            should_exit=True,
+            exit_reason=ExitReason.DELTA_ABSOLUTE,
+            details="Delta exceeded",
+            current_values={},
+        )
+
+        call_count = 0
+        def mock_buy_to_close(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "MSFT" in kwargs.get('option_symbol', ''):
+                return OrderResult(success=False, order_id=None, message="Rejected")
+            return OrderResult(success=True, order_id="exit-001", message="OK")
+
+        comp['execution'].buy_to_close.side_effect = mock_buy_to_close
+
+        exits_needed = [(pos, risk_result, 2.50) for pos in positions]
+
+        import asyncio
+        exit_results = await asyncio.gather(
+            *[loop.execute_exit(pos, rr, current_premium=ep)
+              for pos, rr, ep in exits_needed]
+        )
+        total_exits = sum(1 for r in exit_results if r)
+        assert total_exits == 1  # AAPL succeeds, MSFT fails
 
 
 # ── Scan and Enter ─────────────────────────────────────────────
@@ -499,6 +654,40 @@ class TestScanAndEnter:
         result = await loop.scan_and_enter(deployable_cash=0)
         assert result == 0
 
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_market_order_entry_bypasses_stepped(self, mock_sleep, tmp_path):
+        """When entry_order_type='market', _execute_market_entry is used instead of stepped."""
+        config = _make_config(entry_order_type="market")
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+
+        candidate = make_option_contract(bid=1.50, ask=1.70, mid=1.60)
+
+        # Mock _execute_market_entry and _execute_stepped_entry to track which is called
+        market_result = (
+            OrderResult(success=True, order_id="mkt-001", message="OK"),
+            1.55,
+        )
+        loop._execute_market_entry = AsyncMock(return_value=market_result)
+        loop._execute_stepped_entry = AsyncMock(return_value=None)
+
+        # Pre-set equity scan results so scan_and_enter skips the scan
+        loop._equity_passing = ["AAPL"]
+        loop._equity_scan_date = datetime.now(loop.eastern).date()
+
+        # Options chain and filter return one ranked candidate
+        comp['data_manager'].options_fetcher.get_puts_chain.return_value = [candidate]
+        comp['data_manager'].equity_fetcher.get_close_history.return_value = {}
+        comp['scanner'].options_filter.filter_and_rank.return_value = (
+            [candidate],  # ranked
+            [SimpleNamespace(passes=True, failure_reasons=[])],  # filter_results
+        )
+
+        result = await loop.scan_and_enter(deployable_cash=90000)
+
+        # _execute_market_entry should have been called, not _execute_stepped_entry
+        loop._execute_market_entry.assert_called()
+        loop._execute_stepped_entry.assert_not_called()
+
     async def test_no_equity_passing_returns_negative_one(self, tmp_path):
         loop, comp = _make_loop(tmp_path=tmp_path)
 
@@ -517,6 +706,76 @@ class TestScanAndEnter:
 
         result = await loop.scan_and_enter(deployable_cash=90000)
         assert result == -1
+
+
+# ── Parallel Options Fetch ─────────────────────────────────────
+
+
+class TestFetchSymbolOptions:
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_parallel_fetch_all_succeed(self, mock_sleep, tmp_path):
+        """asyncio.gather fetches multiple symbols in parallel, all succeed."""
+        config = _make_config(ticker_universe=["AAPL", "MSFT", "GOOG"])
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+
+        candidates = {
+            "AAPL": make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", bid=1.50),
+            "MSFT": make_option_contract(underlying="MSFT", symbol="MSFT260220P00400000", strike=400.0, bid=2.00),
+            "GOOG": make_option_contract(underlying="GOOG", symbol="GOOG260220P00170000", strike=170.0, bid=1.80),
+        }
+
+        def mock_get_puts_chain(symbol, stock_price, config, sma_ceiling=None):
+            return [candidates[symbol]]
+
+        comp['data_manager'].options_fetcher.get_puts_chain.side_effect = mock_get_puts_chain
+        comp['data_manager'].equity_fetcher.get_close_history.return_value = {}
+
+        def mock_filter_and_rank(puts):
+            return (puts, [SimpleNamespace(passes=True, failure_reasons=[])])
+
+        comp['scanner'].options_filter.filter_and_rank.side_effect = mock_filter_and_rank
+
+        # Pre-set equity scan results so scan_and_enter skips the equity scan
+        loop._equity_passing = ["AAPL", "MSFT", "GOOG"]
+        loop._equity_scan_date = datetime.now(loop.eastern).date()
+
+        # Mock _execute_market_entry to avoid order execution
+        loop._execute_market_entry = AsyncMock(return_value=None)
+
+        result = await loop.scan_and_enter(deployable_cash=500000)
+
+        # All 3 symbols should have had options scanned
+        assert loop.logger.log_options_scan.call_count == 3
+
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_parallel_fetch_partial_failure(self, mock_sleep, tmp_path):
+        """One symbol raises an exception, other symbols still succeed."""
+        config = _make_config(ticker_universe=["AAPL", "MSFT", "GOOG"])
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+
+        good_candidate = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", bid=1.50)
+
+        def mock_get_puts_chain(symbol, stock_price, config, sma_ceiling=None):
+            if symbol == "MSFT":
+                raise Exception("API timeout for MSFT")
+            return [good_candidate]
+
+        comp['data_manager'].options_fetcher.get_puts_chain.side_effect = mock_get_puts_chain
+        comp['data_manager'].equity_fetcher.get_close_history.return_value = {}
+
+        def mock_filter_and_rank(puts):
+            return (puts, [SimpleNamespace(passes=True, failure_reasons=[])])
+
+        comp['scanner'].options_filter.filter_and_rank.side_effect = mock_filter_and_rank
+
+        loop._equity_passing = ["AAPL", "MSFT", "GOOG"]
+        loop._equity_scan_date = datetime.now(loop.eastern).date()
+        loop._execute_market_entry = AsyncMock(return_value=None)
+
+        result = await loop.scan_and_enter(deployable_cash=500000)
+
+        # AAPL and GOOG should succeed, MSFT should fail gracefully
+        assert loop.logger.log_options_scan.call_count == 2
 
 
 # ── Compute Target Quantity ────────────────────────────────────
@@ -610,6 +869,47 @@ class TestSteppedEntry:
         }
 
         result = await loop._execute_stepped_entry(candidate, qty=1, current_vix=18.0)
+        assert result is None
+
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_market_entry_fills(self, mock_sleep, tmp_path):
+        """_execute_market_entry: market order fills and returns result."""
+        config = _make_config(entry_order_type="market")
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+
+        candidate = make_option_contract(bid=1.50, ask=1.70, mid=1.60)
+
+        comp['execution'].sell_to_open.return_value = OrderResult(
+            success=True, order_id="mkt-001", message="OK",
+        )
+        comp['execution'].get_order_status.return_value = {
+            'status': 'filled', 'filled_avg_price': '1.55', 'filled_qty': '1',
+        }
+
+        result = await loop._execute_market_entry(candidate, qty=1)
+        assert result is not None
+        order_result, filled_price = result
+        assert order_result.order_id == "mkt-001"
+        assert filled_price == 1.55
+
+        # Verify limit_price=None (market order)
+        call_kwargs = comp['execution'].sell_to_open.call_args
+        limit_price = call_kwargs.kwargs.get('limit_price') if call_kwargs.kwargs else call_kwargs[1].get('limit_price')
+        assert limit_price is None
+
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_market_entry_failure_returns_none(self, mock_sleep, tmp_path):
+        """_execute_market_entry: failed order returns None."""
+        config = _make_config(entry_order_type="market")
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+
+        candidate = make_option_contract(bid=1.50, ask=1.70, mid=1.60)
+
+        comp['execution'].sell_to_open.return_value = OrderResult(
+            success=False, order_id=None, message="Insufficient buying power",
+        )
+
+        result = await loop._execute_market_entry(candidate, qty=1)
         assert result is None
 
     @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
@@ -871,3 +1171,280 @@ class TestGetSortKey:
         contract = SimpleNamespace(daily_return_on_collateral=0.0015, strike=220.0,
                                    daily_return_per_delta=0.006, days_since_strike=30)
         assert loop._get_sort_key(contract) == 0.0015
+
+    def test_lowest_delta(self, tmp_path):
+        config = _make_config(contract_rank_mode="lowest_delta")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        contract = SimpleNamespace(delta=-0.15, strike=220.0,
+                                   daily_return_per_delta=0.006, days_since_strike=30,
+                                   daily_return_on_collateral=0.0015)
+        assert loop._get_sort_key(contract) == -0.15
+
+
+class TestGetUniverseSortKey:
+    """_get_universe_sort_key: returns sort value based on universe_rank_mode."""
+
+    def test_daily_return_per_delta(self, tmp_path):
+        config = _make_config(universe_rank_mode="daily_return_per_delta")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        contract = SimpleNamespace(daily_return_per_delta=0.006, strike=220.0,
+                                   days_since_strike=30, daily_return_on_collateral=0.0015,
+                                   delta=-0.25)
+        assert loop._get_universe_sort_key(contract) == 0.006
+
+    def test_lowest_strike_price(self, tmp_path):
+        config = _make_config(universe_rank_mode="lowest_strike_price")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        contract = SimpleNamespace(strike=220.0, daily_return_per_delta=0.006,
+                                   days_since_strike=30, daily_return_on_collateral=0.0015,
+                                   delta=-0.25)
+        assert loop._get_universe_sort_key(contract) == -220.0
+
+    def test_days_since_strike(self, tmp_path):
+        config = _make_config(universe_rank_mode="days_since_strike")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        contract = SimpleNamespace(days_since_strike=45, strike=220.0,
+                                   daily_return_per_delta=0.006, daily_return_on_collateral=0.0015,
+                                   delta=-0.25)
+        assert loop._get_universe_sort_key(contract) == 45
+
+    def test_default_daily_return_on_collateral(self, tmp_path):
+        config = _make_config(universe_rank_mode="daily_return_on_collateral")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        contract = SimpleNamespace(daily_return_on_collateral=0.0015, strike=220.0,
+                                   daily_return_per_delta=0.006, days_since_strike=30,
+                                   delta=-0.25)
+        assert loop._get_universe_sort_key(contract) == 0.0015
+
+    def test_lowest_delta(self, tmp_path):
+        config = _make_config(universe_rank_mode="lowest_delta")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        contract = SimpleNamespace(delta=-0.15, strike=220.0,
+                                   daily_return_per_delta=0.006, days_since_strike=30,
+                                   daily_return_on_collateral=0.0015)
+        assert loop._get_universe_sort_key(contract) == -0.15
+
+    def test_independent_of_contract_rank_mode(self, tmp_path):
+        """universe_rank_mode and contract_rank_mode are independent."""
+        config = _make_config(
+            contract_rank_mode="lowest_strike_price",
+            universe_rank_mode="daily_return_on_collateral",
+        )
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        contract = SimpleNamespace(daily_return_on_collateral=0.0015, strike=220.0,
+                                   daily_return_per_delta=0.006, days_since_strike=30,
+                                   delta=-0.25)
+        assert loop._get_sort_key(contract) == -220.0
+        assert loop._get_universe_sort_key(contract) == 0.0015
+
+
+class TestSequentialSizing:
+    """Sequential sizing pass: allocate cash to candidates in priority order."""
+
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_sizes_in_priority_order(self, mock_sleep, tmp_path):
+        """First candidate gets full allocation, subsequent get remainder."""
+        config = _make_config(
+            starting_cash=100_000, max_position_pct=0.50,
+            max_contracts_per_ticker=10, entry_order_type="market",
+        )
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+        comp['alpaca_manager'].compute_available_capital.return_value = 60_000
+
+        # AAPL=$22k collateral, MSFT=$15k, GOOG=$10k
+        # bid/dte/strike chosen so daily_return_on_collateral (bid/dte/strike) ranks AAPL > MSFT > GOOG:
+        # AAPL: bid=4.40, dte=5, strike=220 -> 4.40/5/220 = 0.004
+        # MSFT: bid=2.25, dte=5, strike=150 -> 2.25/5/150 = 0.003
+        # GOOG: bid=1.00, dte=5, strike=100 -> 1.00/5/100 = 0.002
+        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", strike=220.0,
+                                     stock_price=230.0, bid=4.40, ask=4.60, mid=4.50)
+        msft = make_option_contract(underlying="MSFT", symbol="MSFT260220P00150000", strike=150.0,
+                                     stock_price=160.0, bid=2.25, ask=2.45, mid=2.35)
+        goog = make_option_contract(underlying="GOOG", symbol="GOOG260220P00100000", strike=100.0,
+                                     stock_price=110.0, bid=1.00, ask=1.20, mid=1.10)
+
+        # Pre-cache equity scan so scan_and_enter skips the scan step
+        import pytz
+        eastern = pytz.timezone('US/Eastern')
+        loop._equity_passing = ["AAPL", "MSFT", "GOOG"]
+        loop._equity_scan_date = datetime.now(eastern).date()
+        loop._last_scan_results = []
+
+        # Options fetch returns our candidates
+        async def mock_fetch(sym):
+            lookup = {"AAPL": aapl, "MSFT": msft, "GOOG": goog}
+            c = lookup.get(sym)
+            if c is None:
+                return None
+            return {
+                "symbol": sym, "stock_price": c.stock_price, "puts_count": 1,
+                "ranked": [c], "filter_results": [],
+            }
+        loop._fetch_symbol_options = mock_fetch
+
+        # Track which entries are executed
+        executed = []
+        async def mock_execute(candidate, qty, vix, idx, total):
+            executed.append((candidate.underlying, qty))
+            return True
+        loop._execute_single_entry = mock_execute
+
+        # VIX
+        comp['vix_fetcher'].get_current_vix.return_value = 18.0
+        # Events check
+        comp['scanner'].equity_filter.check_events.return_value = {}
+
+        result = await loop.scan_and_enter(deployable_cash=60_000)
+
+        # $60k: AAPL gets 2 contracts ($44k), $16k left; MSFT gets 1 ($15k), $1k left; GOOG skipped
+        assert len(executed) == 2
+        assert executed[0] == ("AAPL", 2)
+        assert executed[1] == ("MSFT", 1)
+        assert result == 2
+
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_skips_when_cash_exhausted(self, mock_sleep, tmp_path):
+        """Candidates beyond cash capacity are skipped."""
+        config = _make_config(
+            starting_cash=100_000, max_position_pct=0.50,
+            max_contracts_per_ticker=1, entry_order_type="market",
+        )
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+        comp['alpaca_manager'].compute_available_capital.return_value = 25_000
+
+        # AAPL: 4.40/5/220 = 0.004, MSFT: 3.00/5/200 = 0.003 -> AAPL ranks first
+        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", strike=220.0,
+                                     stock_price=230.0, bid=4.40, ask=4.60, mid=4.50)
+        msft = make_option_contract(underlying="MSFT", symbol="MSFT260220P00200000", strike=200.0,
+                                     stock_price=210.0, bid=3.00, ask=3.20, mid=3.10)
+
+        import pytz
+        eastern = pytz.timezone('US/Eastern')
+        loop._equity_passing = ["AAPL", "MSFT"]
+        loop._equity_scan_date = datetime.now(eastern).date()
+        loop._last_scan_results = []
+
+        async def mock_fetch(sym):
+            lookup = {"AAPL": aapl, "MSFT": msft}
+            c = lookup.get(sym)
+            if c is None:
+                return None
+            return {
+                "symbol": sym, "stock_price": c.stock_price, "puts_count": 1,
+                "ranked": [c], "filter_results": [],
+            }
+        loop._fetch_symbol_options = mock_fetch
+
+        executed = []
+        async def mock_execute(candidate, qty, vix, idx, total):
+            executed.append((candidate.underlying, qty))
+            return True
+        loop._execute_single_entry = mock_execute
+
+        comp['vix_fetcher'].get_current_vix.return_value = 18.0
+        comp['scanner'].equity_filter.check_events.return_value = {}
+
+        result = await loop.scan_and_enter(deployable_cash=25_000)
+
+        # $25k: AAPL gets 1 ($22k), $3k left — not enough for MSFT ($20k)
+        assert len(executed) == 1
+        assert executed[0] == ("AAPL", 1)
+        assert result == 1
+
+
+class TestParallelEntryExecution:
+    """Parallel entry execution via asyncio.gather."""
+
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_parallel_entries_all_succeed(self, mock_sleep, tmp_path):
+        """Multiple entries execute in parallel, all fill."""
+        config = _make_config(
+            entry_order_type="market", starting_cash=500_000, max_position_pct=0.10,
+            max_contracts_per_ticker=1,
+        )
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+        comp['alpaca_manager'].compute_available_capital.return_value = 500_000
+
+        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", strike=220.0,
+                                     stock_price=230.0, bid=1.50, ask=1.70, mid=1.60)
+        msft = make_option_contract(underlying="MSFT", symbol="MSFT260220P00400000", strike=400.0,
+                                     stock_price=420.0, bid=2.00, ask=2.20, mid=2.10)
+
+        import pytz
+        eastern = pytz.timezone('US/Eastern')
+        loop._equity_passing = ["AAPL", "MSFT"]
+        loop._equity_scan_date = datetime.now(eastern).date()
+        loop._last_scan_results = []
+
+        async def mock_fetch(sym):
+            lookup = {"AAPL": aapl, "MSFT": msft}
+            c = lookup.get(sym)
+            if c is None:
+                return None
+            return {
+                "symbol": sym, "stock_price": c.stock_price, "puts_count": 1,
+                "ranked": [c], "filter_results": [],
+            }
+        loop._fetch_symbol_options = mock_fetch
+
+        comp['vix_fetcher'].get_current_vix.return_value = 18.0
+        comp['scanner'].equity_filter.check_events.return_value = {}
+
+        # Both orders fill
+        comp['execution'].sell_to_open.return_value = OrderResult(
+            success=True, order_id="entry-001", message="OK"
+        )
+        comp['execution'].get_order_status.return_value = {
+            'status': 'filled', 'filled_avg_price': '1.55', 'filled_qty': '1'
+        }
+
+        result = await loop.scan_and_enter(deployable_cash=500_000)
+        assert result == 2
+
+    @patch('csp.trading.loop.asyncio.sleep', new_callable=AsyncMock)
+    async def test_parallel_entries_partial_failure(self, mock_sleep, tmp_path):
+        """One entry fails, others succeed; count reflects partial success."""
+        config = _make_config(
+            entry_order_type="market", starting_cash=500_000, max_position_pct=0.10,
+            max_contracts_per_ticker=1,
+        )
+        loop, comp = _make_loop(tmp_path=tmp_path, config=config)
+        comp['alpaca_manager'].compute_available_capital.return_value = 500_000
+
+        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", strike=220.0,
+                                     stock_price=230.0, bid=1.50, ask=1.70, mid=1.60)
+        msft = make_option_contract(underlying="MSFT", symbol="MSFT260220P00400000", strike=400.0,
+                                     stock_price=420.0, bid=2.00, ask=2.20, mid=2.10)
+
+        import pytz
+        eastern = pytz.timezone('US/Eastern')
+        loop._equity_passing = ["AAPL", "MSFT"]
+        loop._equity_scan_date = datetime.now(eastern).date()
+        loop._last_scan_results = []
+
+        async def mock_fetch(sym):
+            lookup = {"AAPL": aapl, "MSFT": msft}
+            c = lookup.get(sym)
+            if c is None:
+                return None
+            return {
+                "symbol": sym, "stock_price": c.stock_price, "puts_count": 1,
+                "ranked": [c], "filter_results": [],
+            }
+        loop._fetch_symbol_options = mock_fetch
+
+        comp['vix_fetcher'].get_current_vix.return_value = 18.0
+        comp['scanner'].equity_filter.check_events.return_value = {}
+
+        # AAPL fills, MSFT fails
+        def mock_sell_to_open(option_symbol, quantity, limit_price=None):
+            if "MSFT" in option_symbol:
+                return OrderResult(success=False, order_id=None, message="Rejected")
+            return OrderResult(success=True, order_id="entry-001", message="OK")
+        comp['execution'].sell_to_open.side_effect = mock_sell_to_open
+        comp['execution'].get_order_status.return_value = {
+            'status': 'filled', 'filled_avg_price': '1.55', 'filled_qty': '1'
+        }
+
+        result = await loop.scan_and_enter(deployable_cash=500_000)
+        assert result == 1

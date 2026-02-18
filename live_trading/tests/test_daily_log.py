@@ -24,10 +24,13 @@ def config():
 class TestLogConfig:
     def test_creates_snapshot(self, log, config):
         log.log_config(config)
+        log.flush()
         data = json.loads(open(log.today_path).read())
         assert data["config_snapshot"]["starting_cash"] == config.starting_cash
         assert data["config_snapshot"]["paper_trading"] == config.paper_trading
         assert data["config_snapshot"]["delta_stop_multiplier"] == config.delta_stop_multiplier
+        assert data["config_snapshot"]["contract_rank_mode"] == config.contract_rank_mode
+        assert data["config_snapshot"]["universe_rank_mode"] == config.universe_rank_mode
 
 
 class TestLogEquityScan:
@@ -37,6 +40,7 @@ class TestLogEquityScan:
             current_price=230.0, sma_8=228.0, sma_20=225.0, sma_50=220.0, rsi=55.0,
         )
         log.log_equity_scan([scan_result], ["AAPL"])
+        log.flush()
         data = json.loads(open(log.today_path).read())
         assert data["equity_scan"]["scanned"] == 1
         assert "AAPL" in data["equity_scan"]["passed"]
@@ -55,6 +59,7 @@ class TestLogOptionsScan:
         )
         log.log_options_scan(1, "AAPL", [filter_result])
         log.log_options_scan(2, "MSFT", [filter_result])
+        log.flush()
         data = json.loads(open(log.today_path).read())
         assert len(data["options_scans"]) == 2
         assert data["options_scans"][0]["symbol"] == "AAPL"
@@ -66,6 +71,7 @@ class TestLogCycle:
         summary = {"current_vix": 18.5, "deployable_cash": 80000, "entries": 1, "exits": 0}
         log.log_cycle(1, summary)
         log.log_cycle(2, summary)
+        log.flush()
         data = json.loads(open(log.today_path).read())
         assert len(data["cycles"]) == 2
         assert data["cycles"][0]["cycle"] == 1
@@ -82,6 +88,7 @@ class TestLogOrderAttempt:
             action="entry", symbol="AAPL", contract="AAPL260220P00220000",
             steps=steps, outcome="filled", filled_price=1.50,
         )
+        log.flush()
         data = json.loads(open(log.today_path).read())
         assert len(data["order_attempts"]) == 1
         attempt = data["order_attempts"][0]
@@ -117,6 +124,7 @@ class TestExistingLogLoaded:
 
         log = DailyLog(log_dir=str(tmp_path))
         log.log_cycle(1, {"current_vix": 18})
+        log.flush()
         data = json.loads(open(log.today_path).read())
         # Should have original cycle 0 + new cycle 1
         assert len(data["cycles"]) == 2
@@ -127,6 +135,7 @@ class TestIdempotency:
     def test_multiple_calls_safe(self, log, config):
         log.log_config(config)
         log.log_config(config)
+        log.flush()
         data = json.loads(open(log.today_path).read())
         # Config snapshot is overwritten, not duplicated
         assert isinstance(data["config_snapshot"], dict)

@@ -47,15 +47,29 @@ def _env_float(key: str, default: float) -> float:
 
 
 def build_config() -> StrategyConfig:
-    """Build StrategyConfig from environment variables."""
-    return StrategyConfig(
-        paper_trading=_env_bool("PAPER_TRADING", True),
-        starting_cash=_env_float("STARTING_CASH", 1_000_000),
-        storage_backend=os.getenv("STORAGE_BACKEND", "local"),
-        gcs_bucket_name=os.getenv("GCS_BUCKET_NAME"),
-        gcs_prefix=os.getenv("GCS_PREFIX", "paper"),
-        poll_interval_seconds=_env_int("POLL_INTERVAL", 60),
-    )
+    """Build StrategyConfig from environment variables.
+
+    Only overrides StrategyConfig defaults when the env var is explicitly set.
+    All defaults live in config.py as the single source of truth.
+    """
+    overrides = {}
+
+    if os.getenv("PAPER_TRADING"):
+        overrides["paper_trading"] = _env_bool("PAPER_TRADING", True)
+    if os.getenv("STARTING_CASH"):
+        overrides["starting_cash"] = _env_float("STARTING_CASH", 1_000_000)
+    if os.getenv("STORAGE_BACKEND"):
+        overrides["storage_backend"] = os.getenv("STORAGE_BACKEND")
+    if os.getenv("GCS_BUCKET_NAME"):
+        overrides["gcs_bucket_name"] = os.getenv("GCS_BUCKET_NAME")
+    if os.getenv("GCS_PREFIX"):
+        overrides["gcs_prefix"] = os.getenv("GCS_PREFIX")
+    if os.getenv("POLL_INTERVAL"):
+        overrides["poll_interval_seconds"] = _env_int("POLL_INTERVAL", 60)
+    if os.getenv("ENTRY_ORDER_TYPE"):
+        overrides["entry_order_type"] = os.getenv("ENTRY_ORDER_TYPE")
+
+    return StrategyConfig(**overrides)
 
 
 def build_components(config: StrategyConfig):
@@ -100,7 +114,7 @@ async def main():
     dry_run = "--dry-run" in sys.argv
 
     print("=" * 60)
-    print("CSP Strategy — Cloud Run Job")
+    print("CSP Strategy — Cloud Run Job  [v3]")
     print("=" * 60)
 
     config = build_config()
