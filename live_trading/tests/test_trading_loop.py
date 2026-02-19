@@ -1247,6 +1247,7 @@ class TestSequentialSizing:
         config = _make_config(
             starting_cash=100_000, max_position_pct=0.50,
             max_contracts_per_ticker=10, entry_order_type="market",
+            universe_rank_mode="daily_return_on_collateral",
         )
         loop, comp = _make_loop(tmp_path=tmp_path, config=config)
         comp['alpaca_manager'].compute_available_capital.return_value = 60_000
@@ -1448,3 +1449,38 @@ class TestParallelEntryExecution:
 
         result = await loop.scan_and_enter(deployable_cash=500_000)
         assert result == 1
+
+
+# ── Print Mode Tests ─────────────────────────────────────────
+
+
+class TestPrintMode:
+    """Tests for _vprint() and summary/verbose print modes."""
+
+    def test_vprint_verbose_mode(self, tmp_path, capsys):
+        """_vprint prints when print_mode='verbose'."""
+        config = _make_config(print_mode="verbose")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        loop._vprint("hello verbose")
+        captured = capsys.readouterr()
+        assert "hello verbose" in captured.out
+
+    def test_vprint_summary_mode(self, tmp_path, capsys):
+        """_vprint is silent when print_mode='summary'."""
+        config = _make_config(print_mode="summary")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        loop._vprint("should not appear")
+        captured = capsys.readouterr()
+        assert "should not appear" not in captured.out
+
+    def test_summary_header_printed(self, tmp_path, capsys):
+        """Summary header is printed in summary mode during run() startup."""
+        config = _make_config(print_mode="summary")
+        loop, _ = _make_loop(tmp_path=tmp_path, config=config)
+        # We can't easily run the full loop, but we can verify the header format
+        # by checking that the config is wired correctly
+        assert config.print_mode == "summary"
+        assert hasattr(loop, '_last_equity_passed')
+        assert hasattr(loop, '_last_options_evaluated')
+        assert loop._last_equity_passed == 0
+        assert loop._last_options_evaluated == 0

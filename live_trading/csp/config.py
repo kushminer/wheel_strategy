@@ -64,9 +64,9 @@ class StrategyConfig:
     # ==================== OPTIONS FILTER PARAMS ====================
     min_daily_return: float = 0.0015 # Minimum daily return (premium/dte/strike)    
     max_strike_sma_period: int = 20 # Simple Moving Average (SMA) period for strike ceiling
-    max_strike_mode: str = "sma" # "sma" or "pct"
+    max_strike_mode: str = "pct" # "sma" or "pct"
     min_strike_pct: float = 0.50 # Minimum strike percentage of stock price
-    max_strike_pct: float = 0.90 # Maximum strike percentage of stock price
+    max_strike_pct: float = 0.97 # Maximum strike percentage of stock price
     delta_min: float = 0.00 # Minimum delta
     delta_max: float = 0.40 # Maximum delta
     max_dte: int = 10 # Maximum days to expiry
@@ -139,6 +139,9 @@ class StrategyConfig:
     enable_stock_drop_stop: bool = False # Stock drop stop
     enable_vix_spike_stop: bool = True # VIX spike stop
     enable_early_exit: bool = True # Early exit
+
+    # ==================== OUTPUT ====================
+    print_mode: str = "summary"  # "summary" or "verbose"
 
     def get_deployment_multiplier(self, vix: float) -> float:
         """Get cash deployment multiplier based on current VIX."""

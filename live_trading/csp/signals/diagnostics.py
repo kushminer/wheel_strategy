@@ -77,7 +77,9 @@ def print_scan_diagnostics(scanner, config, alpaca):
         _print_best_picks(all_candidates, price_history, config)
     else:
         print("\nNo candidates found with equity filter enabled.")
-        _print_failure_diagnostics(passing_equity, scanner, config, price_history)
+
+    # Show rejected contracts for every equity-passing symbol
+    _print_rejected_contracts(passing_equity, scanner, config, price_history)
 
 
 # ── Private display helpers ──────────────────────────────────────
@@ -218,6 +220,78 @@ def _print_best_picks(candidates, price_history, config):
             f"| {picks['daily_return_on_collateral']:<30} "
             f"| {picks['lowest_strike']:<30}"
         )
+
+
+def _print_rejected_contracts(passing_equity, scanner, config, price_history):
+    """Print rejected options contracts for each equity-passing symbol."""
+    # Collect symbols that passed equity filter
+    symbols_with_options = [r for r in passing_equity]
+    if not symbols_with_options:
+        return
+
+    print(f"\n{'='*140}")
+    print("Rejected Contracts")
+    print(f"{'='*140}")
+    print(
+        f"{'Symbol':<26} {'Price':>9} {'Strike':>8} {'Drop%':>7} {'Days':>5} "
+        f"{'DTE':>5} {'Bid':>8} {'Ask':>8} {'Spread':>8} {'Sprd%':>7} "
+        f"{'Delta':>7} {'Daily%':>9} {'Vol':>6} {'OI':>6}  Fail Reasons"
+    )
+    print("-" * 175)
+
+    total_rejected = 0
+    for result in symbols_with_options:
+        sma_ceiling = None
+        if config.max_strike_mode == "sma":
+            sma_ceiling = getattr(result.equity_result, f"sma_{config.max_strike_sma_period}", None)
+
+        puts = scanner.options_fetcher.get_puts_chain(
+            result.symbol, result.stock_price, config, sma_ceiling=sma_ceiling,
+        )
+
+        if not puts:
+            continue
+
+        _, all_filter_results = scanner.options_filter.filter_and_rank(puts)
+
+        # Only show rejected contracts
+        rejected = [r for r in all_filter_results if not r.passes]
+        if not rejected:
+            continue
+
+        # Sort by daily return descending (best near-misses first)
+        rejected.sort(key=lambda r: r.daily_return, reverse=True)
+        total_rejected += len(rejected)
+
+        for r in rejected:
+            c = r.contract
+            delta_str = f"{abs(c.delta):.3f}" if c.delta else "N/A"
+            spread = c.ask - c.bid if c.ask and c.bid else 0
+            spread_pct = spread / c.mid if c.mid > 0 else 0
+            vol_str = f"{c.volume:>6}" if c.volume is not None else "     0"
+            oi_str = f"{c.open_interest:>6}" if c.open_interest is not None else "   N/A"
+            drop_pct = (c.stock_price - c.strike) / c.stock_price
+            days_str = _days_since_strike_str(c, price_history)
+            reasons = "; ".join(r.failure_reasons)
+            print(
+                f"{c.symbol:<26} "
+                f"${c.stock_price:>8.2f} "
+                f"${c.strike:>7.2f} "
+                f"{drop_pct:>6.1%} "
+                f"{days_str:>5} "
+                f"{c.dte:>5} "
+                f"${c.bid:>7.2f} "
+                f"${c.ask:>7.2f} "
+                f"${spread:>7.2f} "
+                f"{spread_pct:>6.0%} "
+                f"{delta_str:>7} "
+                f"{r.daily_return:>8.4%} "
+                f"{vol_str} "
+                f"{oi_str}  "
+                f"{reasons}"
+            )
+
+    print(f"\nTotal rejected: {total_rejected}")
 
 
 def _print_failure_diagnostics(passing_equity, scanner, config, price_history):

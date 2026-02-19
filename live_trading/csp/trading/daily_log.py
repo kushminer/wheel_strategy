@@ -105,6 +105,7 @@ class DailyLog:
             "vix_spike_multiplier": config.vix_spike_multiplier,
             "contract_rank_mode": config.contract_rank_mode,
             "universe_rank_mode": config.universe_rank_mode,
+            "print_mode": config.print_mode,
         }
         self._dirty = True
 

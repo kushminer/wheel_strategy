@@ -78,6 +78,15 @@ class TradingLoop:
         self.logger = DailyLog(log_dir="logs", backend=self._storage_backend)
         print(f"  Daily log: {self.logger.today_path}")
 
+        # Summary-mode cycle counters
+        self._last_equity_passed = 0
+        self._last_options_evaluated = 0
+
+    def _vprint(self, msg: str):
+        """Print only in verbose mode."""
+        if self.config.print_mode == "verbose":
+            print(msg)
+
     # ── Alpaca helpers (source of truth for positions) ──────────
 
     async def _get_alpaca_positions(self) -> list:
@@ -85,7 +94,7 @@ class TradingLoop:
         try:
             return await _arun(self.alpaca_manager.trading_client.get_all_positions)
         except Exception as e:
-            print(f"  Warning: Could not fetch Alpaca positions: {e}")
+            self._vprint(f"  Warning: Could not fetch Alpaca positions: {e}")
             return []
 
     async def _get_option_positions(self) -> list:
@@ -177,7 +186,7 @@ class TradingLoop:
                 if not is_trading_day:
                     print(f"  Market closed today ({today} is not a trading day)")
             except Exception as e:
-                print(f"  Warning: Alpaca calendar check failed ({e}), falling back to time-only check")
+                self._vprint(f"  Warning: Alpaca calendar check failed ({e}), falling back to time-only check")
                 self._trading_day_cache = {'date': today, 'is_trading_day': True, 'open': None, 'close': None}
 
         if not self._trading_day_cache['is_trading_day']:
@@ -246,7 +255,7 @@ class TradingLoop:
 
             meta = self.metadata.get(option_sym)
             if meta is None:
-                print(f"  Warning: No metadata for {option_sym}, skipping risk checks")
+                self._vprint(f"  Warning: No metadata for {option_sym}, skipping risk checks")
                 continue
             positions_to_check.append(self._build_position_proxy(alpaca_pos, meta))
 
@@ -303,7 +312,7 @@ class TradingLoop:
                 )
 
                 if position.option_symbol not in snapshots:
-                    print(f"  Warning: No data for {position.option_symbol}")
+                    self._vprint(f"  Warning: No data for {position.option_symbol}")
                     return None
 
                 snapshot = snapshots[position.option_symbol]
@@ -322,7 +331,7 @@ class TradingLoop:
                 # Handle missing delta
                 if current_delta is None:
                     if self.config.exit_on_missing_delta:
-                        print(f"  WARNING: Delta unavailable for {position.symbol}, triggering exit (exit_on_missing_delta=True)")
+                        self._vprint(f"  WARNING: Delta unavailable for {position.symbol}, triggering exit (exit_on_missing_delta=True)")
                         data_result = RiskCheckResult(
                             should_exit=True,
                             exit_reason=ExitReason.DATA_UNAVAILABLE,
@@ -334,7 +343,7 @@ class TradingLoop:
                         )
                         return (position, data_result, current_premium)
                     else:
-                        print(f"  WARNING: Delta unavailable for {position.symbol}, using entry_delta as fallback")
+                        self._vprint(f"  WARNING: Delta unavailable for {position.symbol}, using entry_delta as fallback")
                         current_delta = position.entry_delta
 
                 # Run risk evaluation
@@ -479,6 +488,7 @@ class TradingLoop:
         self._equity_passing = [r.symbol for r in passing_equity]
         self._equity_scan_date = today
         self._last_scan_results = scan_results  # Cache full results for diagnostics
+        self._last_equity_passed = len(passing_equity)
         
         print(f"  Symbols scanned:                         {len(scan_results)}")
         print(f"  Passed equity filter:                     {len(passing_equity)}")
@@ -487,13 +497,13 @@ class TradingLoop:
         # Print equity-passing table
         if passing_equity:
             bb_label = f"BB{self.config.bb_period}"
-            print(f"\n  \u2713 Equity-passing symbols ({len(passing_equity)}):")
-            print(f"  {'Symbol':<8} {'Price':>9} {'SMA8':>9} {'SMA20':>9} {'SMA50':>9} {bb_label:>9} {'RSI':>6} {'Collateral':>12}")
-            print("  " + "-" * 72)
+            self._vprint(f"\n  \u2713 Equity-passing symbols ({len(passing_equity)}):")
+            self._vprint(f"  {'Symbol':<8} {'Price':>9} {'SMA8':>9} {'SMA20':>9} {'SMA50':>9} {bb_label:>9} {'RSI':>6} {'Collateral':>12}")
+            self._vprint("  " + "-" * 72)
             for result in passing_equity:
                 r = result.equity_result
                 collateral = r.current_price * 100
-                print(
+                self._vprint(
                     f"  {r.symbol:<8} "
                     f"${r.current_price:>8.2f} "
                     f"{r.sma_8:>9.2f} "
@@ -568,7 +578,7 @@ class TradingLoop:
         since no limit price depends on stale quotes.
         """
         symbol = candidate.symbol
-        print(f"    Market order: selling {qty}x {symbol}")
+        self._vprint(f"    Market order: selling {qty}x {symbol}")
 
         self._last_step_log = []
 
@@ -580,7 +590,7 @@ class TradingLoop:
         )
 
         if not result.success:
-            print(f"    Market order failed: {result.message}")
+            self._vprint(f"    Market order failed: {result.message}")
             self._last_step_log.append({
                 "step": 0, "type": "market", "status": "failed",
                 "message": result.message,
@@ -604,10 +614,10 @@ class TradingLoop:
         })
 
         if order_status in ('filled', 'partially_filled'):
-            print(f"    FILLED @ ${filled_price:.2f}")
+            self._vprint(f"    FILLED @ ${filled_price:.2f}")
             return (result, filled_price)
 
-        print(f"    Market order status: {order_status} (expected fill)")
+        self._vprint(f"    Market order status: {order_status} (expected fill)")
         return (result, filled_price)
 
     async def _execute_stepped_entry(
@@ -644,14 +654,14 @@ class TradingLoop:
         price_floor = max(bid, floor_from_steps)
         limit_price = round(max(limit_price, price_floor), 2)
 
-        print(f"    Stepped entry: start=${limit_price:.2f}, "
+        self._vprint(f"    Stepped entry: start=${limit_price:.2f}, "
               f"bid=${bid:.2f}, ask=${ask:.2f}, mid=${mid:.2f}, "
               f"spread=${spread:.2f}, floor=${price_floor:.2f}")
 
         self._last_step_log = []
 
         for step in range(cfg.entry_max_steps + 1):
-            print(f"    Step {step}/{cfg.entry_max_steps}: limit @ ${limit_price:.2f}")
+            self._vprint(f"    Step {step}/{cfg.entry_max_steps}: limit @ ${limit_price:.2f}")
 
             result = await _arun(
                 self.execution.sell_to_open,
@@ -661,12 +671,12 @@ class TradingLoop:
             )
 
             if not result.success:
-                print(f"    Step {step}: order submission failed — {result.message}")
+                self._vprint(f"    Step {step}: order submission failed — {result.message}")
                 return None
 
             order_id = result.order_id
 
-            print(f"    Step {step}: waiting {cfg.entry_step_interval}s for fill...")
+            self._vprint(f"    Step {step}: waiting {cfg.entry_step_interval}s for fill...")
             await asyncio.sleep(cfg.entry_step_interval)
 
             status = await _arun(self.execution.get_order_status, order_id)
@@ -680,11 +690,11 @@ class TradingLoop:
             if status and status['status'] in ('filled', 'partially_filled'):
                 filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
                 tag = "FILLED" if status['status'] == 'filled' else f"PARTIAL ({status['filled_qty']}/{qty})"
-                print(f"    Step {step}: {tag} @ ${filled_price:.2f}")
+                self._vprint(f"    Step {step}: {tag} @ ${filled_price:.2f}")
                 return (result, filled_price)
 
             # Not filled — cancel
-            print(f"    Step {step}: not filled (status={status['status'] if status else 'unknown'}), cancelling...")
+            self._vprint(f"    Step {step}: not filled (status={status['status'] if status else 'unknown'}), cancelling...")
             await _arun(self.execution.cancel_order, order_id)
             await asyncio.sleep(1)  # brief pause for cancel to propagate
 
@@ -692,19 +702,19 @@ class TradingLoop:
             status = await _arun(self.execution.get_order_status, order_id)
             if status and status['status'] in ('filled', 'partially_filled'):
                 filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
-                print(f"    Step {step}: filled during cancel @ ${filled_price:.2f}")
+                self._vprint(f"    Step {step}: filled during cancel @ ${filled_price:.2f}")
                 return (result, filled_price)
 
             # Last step — give up
             if step >= cfg.entry_max_steps:
-                print(f"    All {cfg.entry_max_steps} steps exhausted. Giving up on {candidate.underlying}.")
+                self._vprint(f"    All {cfg.entry_max_steps} steps exhausted. Giving up on {candidate.underlying}.")
                 return None
 
             # Optionally re-fetch snapshot
             if cfg.entry_refetch_snapshot:
                 snapshots = await _arun(self.data_manager.options_fetcher.get_option_snapshots, [symbol])
                 if symbol not in snapshots:
-                    print(f"    Snapshot unavailable after re-fetch. Aborting.")
+                    self._vprint(f"    Snapshot unavailable after re-fetch. Aborting.")
                     return None
 
                 snap = snapshots[symbol]
@@ -712,7 +722,7 @@ class TradingLoop:
                 new_ask = float(snap.get('ask', 0) or 0)
 
                 if new_bid <= 0:
-                    print(f"    Bid is zero after re-fetch. Aborting.")
+                    self._vprint(f"    Bid is zero after re-fetch. Aborting.")
                     return None
 
                 new_mid = (new_bid + new_ask) / 2
@@ -734,13 +744,13 @@ class TradingLoop:
                 # Re-validate against filters
                 filter_result = self.scanner.options_filter.evaluate(candidate)
                 if not filter_result.passes:
-                    print(f"    Contract no longer passes filters: {filter_result.failure_reasons}")
+                    self._vprint(f"    Contract no longer passes filters: {filter_result.failure_reasons}")
                     return None
 
                 bid, ask, mid, spread = new_bid, new_ask, new_mid, new_spread
                 price_floor = max(bid, mid - (cfg.entry_max_steps * cfg.entry_step_pct * spread))
 
-                print(f"    Refreshed: bid=${bid:.2f}, ask=${ask:.2f}, "
+                self._vprint(f"    Refreshed: bid=${bid:.2f}, ask=${ask:.2f}, "
                       f"mid=${mid:.2f}, spread=${spread:.2f}, floor=${price_floor:.2f}")
 
             # Compute next step price
@@ -781,8 +791,8 @@ class TradingLoop:
 
         print(f"\n  [{index}/{total_count}] ENTERING {candidate.underlying}: {candidate.symbol}")
         print(f"    Stock: ${candidate.stock_price:.2f} | Strike: ${candidate.strike:.2f} | DTE: {candidate.dte}")
-        print(f"    Bid: ${candidate.bid:.2f} | Ask: ${candidate.ask:.2f} | Mid: ${candidate.mid:.2f} | Spread: ${spread:.2f}")
-        print(f"    Delta: {delta_str} | IV: {candidate.implied_volatility:.1%} | Daily: {candidate.daily_return_on_collateral:.4%}")
+        self._vprint(f"    Bid: ${candidate.bid:.2f} | Ask: ${candidate.ask:.2f} | Mid: ${candidate.mid:.2f} | Spread: ${spread:.2f}")
+        self._vprint(f"    Delta: {delta_str} | IV: {candidate.implied_volatility:.1%} | Daily: {candidate.daily_return_on_collateral:.4%}")
         print(f"    Qty: {qty} | Collateral: ${total_collateral:,.0f} (target: ${target_val:,.0f})")
 
         # Execute entry
@@ -861,7 +871,7 @@ class TradingLoop:
         # Fetch current snapshot
         snapshots = await _arun(self.data_manager.options_fetcher.get_option_snapshots, [option_symbol])
         if option_symbol not in snapshots:
-            print(f"    Stepped exit: no snapshot for {option_symbol}")
+            self._vprint(f"    Stepped exit: no snapshot for {option_symbol}")
             return None
 
         snap = snapshots[option_symbol]
@@ -869,7 +879,7 @@ class TradingLoop:
         ask = float(snap.get('ask', 0) or 0)
 
         if ask <= 0:
-            print(f"    Stepped exit: ask is zero, aborting")
+            self._vprint(f"    Stepped exit: ask is zero, aborting")
             return None
 
         mid = (bid + ask) / 2
@@ -886,12 +896,12 @@ class TradingLoop:
         price_ceiling = min(ask, ceiling_from_steps)
         limit_price = round(min(limit_price, price_ceiling), 2)
 
-        print(f"    Stepped exit: start=${limit_price:.2f}, "
+        self._vprint(f"    Stepped exit: start=${limit_price:.2f}, "
               f"bid=${bid:.2f}, ask=${ask:.2f}, mid=${mid:.2f}, "
               f"spread=${spread:.2f}, ceiling=${price_ceiling:.2f}")
 
         for step in range(cfg.exit_max_steps + 1):
-            print(f"    Step {step}/{cfg.exit_max_steps}: limit @ ${limit_price:.2f}")
+            self._vprint(f"    Step {step}/{cfg.exit_max_steps}: limit @ ${limit_price:.2f}")
 
             result = await _arun(
                 self.execution.buy_to_close,
@@ -901,12 +911,12 @@ class TradingLoop:
             )
 
             if not result.success:
-                print(f"    Step {step}: order submission failed -- {result.message}")
+                self._vprint(f"    Step {step}: order submission failed -- {result.message}")
                 return None
 
             order_id = result.order_id
 
-            print(f"    Step {step}: waiting {cfg.exit_step_interval}s for fill...")
+            self._vprint(f"    Step {step}: waiting {cfg.exit_step_interval}s for fill...")
             await asyncio.sleep(cfg.exit_step_interval)
 
             status = await _arun(self.execution.get_order_status, order_id)
@@ -914,11 +924,11 @@ class TradingLoop:
             if status and status['status'] in ('filled', 'partially_filled'):
                 filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
                 tag = "FILLED" if status['status'] == 'filled' else f"PARTIAL ({status['filled_qty']}/{qty})"
-                print(f"    Step {step}: {tag} @ ${filled_price:.2f}")
+                self._vprint(f"    Step {step}: {tag} @ ${filled_price:.2f}")
                 return (result, filled_price)
 
             # Not filled -- cancel
-            print(f"    Step {step}: not filled (status={status['status'] if status else 'unknown'}), cancelling...")
+            self._vprint(f"    Step {step}: not filled (status={status['status'] if status else 'unknown'}), cancelling...")
             await _arun(self.execution.cancel_order, order_id)
             await asyncio.sleep(1)
 
@@ -926,19 +936,19 @@ class TradingLoop:
             status = await _arun(self.execution.get_order_status, order_id)
             if status and status['status'] in ('filled', 'partially_filled'):
                 filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
-                print(f"    Step {step}: filled during cancel @ ${filled_price:.2f}")
+                self._vprint(f"    Step {step}: filled during cancel @ ${filled_price:.2f}")
                 return (result, filled_price)
 
             # Last step -- give up
             if step >= cfg.exit_max_steps:
-                print(f"    All {cfg.exit_max_steps} steps exhausted for exit of {position.symbol}.")
+                self._vprint(f"    All {cfg.exit_max_steps} steps exhausted for exit of {position.symbol}.")
                 return None
 
             # Optionally re-fetch snapshot
             if cfg.exit_refetch_snapshot:
                 snapshots = await _arun(self.data_manager.options_fetcher.get_option_snapshots, [option_symbol])
                 if option_symbol not in snapshots:
-                    print(f"    Snapshot unavailable after re-fetch. Aborting.")
+                    self._vprint(f"    Snapshot unavailable after re-fetch. Aborting.")
                     return None
 
                 snap = snapshots[option_symbol]
@@ -946,7 +956,7 @@ class TradingLoop:
                 new_ask = float(snap.get('ask', 0) or 0)
 
                 if new_ask <= 0:
-                    print(f"    Ask is zero after re-fetch. Aborting.")
+                    self._vprint(f"    Ask is zero after re-fetch. Aborting.")
                     return None
 
                 new_mid = (new_bid + new_ask) / 2
@@ -955,7 +965,7 @@ class TradingLoop:
                 bid, ask, mid, spread = new_bid, new_ask, new_mid, new_spread
                 price_ceiling = min(ask, mid + (cfg.exit_max_steps * cfg.exit_step_pct * spread))
 
-                print(f"    Refreshed: bid=${bid:.2f}, ask=${ask:.2f}, "
+                self._vprint(f"    Refreshed: bid=${bid:.2f}, ask=${ask:.2f}, "
                       f"mid=${mid:.2f}, spread=${spread:.2f}, ceiling=${price_ceiling:.2f}")
 
             # Compute next step price (step UP toward ask)
@@ -987,7 +997,7 @@ class TradingLoop:
         try:
             alpaca_positions = await _arun(self.alpaca_manager.trading_client.get_all_positions)
         except Exception as e:
-            print(f"  Warning: Could not fetch Alpaca positions for assignment check: {e}")
+            self._vprint(f"  Warning: Could not fetch Alpaca positions for assignment check: {e}")
             return assigned
 
         # Build lookup maps
@@ -1084,7 +1094,7 @@ class TradingLoop:
                     "filter_results": filter_results,
                 }
             except Exception as e:
-                print(f"  Error fetching options for {symbol}: {e}")
+                self._vprint(f"  Error fetching options for {symbol}: {e}")
                 return None
 
     async def scan_and_enter(self, deployable_cash: float) -> int:
@@ -1120,8 +1130,8 @@ class TradingLoop:
         symbols_to_check = [s for s in equity_passing if s not in active_symbols]
         
         if skipped_active:
-            print(f"\n  Already in portfolio (skipped): {skipped_active}")
-        print(f"  Checking options for {len(symbols_to_check)} symbol(s): {symbols_to_check}")
+            self._vprint(f"\n  Already in portfolio (skipped): {skipped_active}")
+        self._vprint(f"  Checking options for {len(symbols_to_check)} symbol(s): {symbols_to_check}")
         
         all_candidates = []
         all_filter_results_by_symbol = {}  # symbol -> (stock_price, puts_count, filter_results, ranked)
@@ -1161,6 +1171,9 @@ class TradingLoop:
                         key = reason
                     all_failure_counts[key] = all_failure_counts.get(key, 0) + 1
         
+        # Track total contracts evaluated for summary mode
+        self._last_options_evaluated = sum(info[1] for info in all_filter_results_by_symbol.values())
+
         # Flush all options scan logs in one batch
         self.logger.flush()
 
@@ -1200,8 +1213,8 @@ class TradingLoop:
             # Detailed per-symbol diagnostics (like Cell 34)
             failed_symbols = [(s, info) for s, info in all_filter_results_by_symbol.items() if not info[3]]
             if failed_symbols:
-                print(f"\n  Diagnostic \u2014 {len(failed_symbols)} equity-passing symbol(s) failed options filter:")
-                print("  " + "-" * 95)
+                self._vprint(f"\n  Diagnostic \u2014 {len(failed_symbols)} equity-passing symbol(s) failed options filter:")
+                self._vprint("  " + "-" * 95)
                 for symbol, (stock_price, puts_count, filter_results, _) in sorted(failed_symbols):
                     if puts_count == 0:
                         if self.config.max_strike_mode == "sma":
@@ -1209,10 +1222,10 @@ class TradingLoop:
                         else:
                             max_strike = stock_price * self.config.max_strike_pct
                         min_strike = stock_price * self.config.min_strike_pct
-                        print(f"\n    {symbol} @ ${stock_price:.2f}: 0 puts returned from API "
+                        self._vprint(f"\n    {symbol} @ ${stock_price:.2f}: 0 puts returned from API "
                               f"(strike range ${min_strike:.0f}-${max_strike:.0f}, DTE {self.config.min_dte}-{self.config.max_dte})")
                         continue
-                    
+
                     # Tally per-symbol failure reasons
                     sym_failure_counts = {}
                     for r in filter_results:
@@ -1228,19 +1241,19 @@ class TradingLoop:
                             else:
                                 key = reason
                             sym_failure_counts[key] = sym_failure_counts.get(key, 0) + 1
-                    
+
                     reasons_str = ", ".join(f"{k}: {v}" for k, v in sorted(sym_failure_counts.items(), key=lambda x: -x[1]))
-                    print(f"\n    {symbol} @ ${stock_price:.2f}: {puts_count} puts, 0 passed \u2014 {reasons_str}")
-                    
+                    self._vprint(f"\n    {symbol} @ ${stock_price:.2f}: {puts_count} puts, 0 passed \u2014 {reasons_str}")
+
                     # Show nearest misses (top 5 by daily return)
                     near_misses = sorted(filter_results, key=lambda r: r.daily_return, reverse=True)[:5]
-                    print(f"      {'Contract':<26} {'Strike':>8} {'DTE':>5} {'Bid':>8} {'Delta':>8} {'Daily%':>10}  Fail Reasons")
-                    print(f"      {'-'*91}")
+                    self._vprint(f"      {'Contract':<26} {'Strike':>8} {'DTE':>5} {'Bid':>8} {'Delta':>8} {'Daily%':>10}  Fail Reasons")
+                    self._vprint(f"      {'-'*91}")
                     for r in near_misses:
                         c = r.contract
                         delta_str = f"{r.delta_abs:.3f}" if r.delta_abs else "N/A"
                         reasons = "; ".join(r.failure_reasons) if r.failure_reasons else "\u2713"
-                        print(
+                        self._vprint(
                             f"      {c.symbol:<26} "
                             f"${c.strike:>7.2f} "
                             f"{c.dte:>5} "
@@ -1253,13 +1266,13 @@ class TradingLoop:
             return 0  # 0 means "none right now, keep trying"
         
         # === Print full candidate table ===
-        print(f"\n  {len(all_candidates)} total option candidates, {len(candidates)} selected for entry")
-        
+        self._vprint(f"\n  {len(all_candidates)} total option candidates, {len(candidates)} selected for entry")
+
         # Sort for display: by symbol ascending, then daily return descending
         display_candidates = sorted(all_candidates, key=lambda c: (c.underlying, -c.daily_return_on_collateral))
-        
-        print(f"\n  {'Symbol':<26} {'Price':>9} {'Strike':>8} {'Drop%':>7} {'Days':>5} {'DTE':>5} {'Bid':>8} {'Ask':>8} {'Spread':>8} {'Sprd%':>7} {'Delta':>7} {'Daily%':>9} {'Vol':>6} {'OI':>6}")
-        print("  " + "-" * 135)
+
+        self._vprint(f"\n  {'Symbol':<26} {'Price':>9} {'Strike':>8} {'Drop%':>7} {'Days':>5} {'DTE':>5} {'Bid':>8} {'Ask':>8} {'Spread':>8} {'Sprd%':>7} {'Delta':>7} {'Daily%':>9} {'Vol':>6} {'OI':>6}")
+        self._vprint("  " + "-" * 135)
         for c in display_candidates:
             delta_str = f"{abs(c.delta):.3f}" if c.delta else "N/A"
             spread = c.ask - c.bid if c.ask and c.bid else 0
@@ -1268,7 +1281,7 @@ class TradingLoop:
             oi_str = f"{c.open_interest:>6}" if c.open_interest is not None else "   N/A"
             drop_pct = (c.stock_price - c.strike) / c.stock_price if c.stock_price > 0 else 0
             days_str = str(c.days_since_strike) if c.days_since_strike is not None and c.days_since_strike < 999 else ">60"
-            print(
+            self._vprint(
                 f"  {c.symbol:<26} "
                 f"${c.stock_price:>8.2f} "
                 f"${c.strike:>7.2f} "
@@ -1284,32 +1297,32 @@ class TradingLoop:
                 f"{vol_str} "
                 f"{oi_str} "
             )
-        
+
         # === Best Pick Per Ticker by Ranking Mode ===
         if len(all_candidates) > 1:
-            
+
             def _days_since(c):
                 return c.days_since_strike if c.days_since_strike is not None else 0
-            
+
             rank_modes = {
                 "daily_ret/delta": lambda c: c.daily_return_per_delta,
                 "days_since_strike": lambda c: _days_since(c),
                 "daily_return_on_collateral": lambda c: c.daily_return_on_collateral,
                 "lowest_strike": lambda c: -c.strike,
             }
-            
+
             sorted_by_ticker = sorted(all_candidates, key=lambda c: c.underlying)
             tickers = []
             for ticker, grp in groupby(sorted_by_ticker, key=lambda c: c.underlying):
                 tickers.append((ticker, list(grp)))
-            
+
             if tickers:
-                print(f"\n  {'='*120}")
-                print(f"  Best Pick Per Ticker by Ranking Mode   (per-ticker: {self.config.contract_rank_mode}, universe: {self.config.universe_rank_mode})")
-                print(f"  {'='*120}")
-                print(f"    {'Ticker':<8} | {'daily_ret/delta':<30} | {'days_since_strike':<30} | {'daily_ret':<30} | {'lowest_strike':<30}")
-                print(f"    {'-'*8}-+-{'-'*30}-+-{'-'*30}-+-{'-'*30}-+-{'-'*30}")
-                
+                self._vprint(f"\n  {'='*120}")
+                self._vprint(f"  Best Pick Per Ticker by Ranking Mode   (per-ticker: {self.config.contract_rank_mode}, universe: {self.config.universe_rank_mode})")
+                self._vprint(f"  {'='*120}")
+                self._vprint(f"    {'Ticker':<8} | {'daily_ret/delta':<30} | {'days_since_strike':<30} | {'daily_ret':<30} | {'lowest_strike':<30}")
+                self._vprint(f"    {'-'*8}-+-{'-'*30}-+-{'-'*30}-+-{'-'*30}-+-{'-'*30}")
+
                 for ticker, contracts in tickers:
                     picks = {}
                     for mode_name, key_fn in rank_modes.items():
@@ -1325,22 +1338,22 @@ class TradingLoop:
                         else:
                             val_str = f"{best.symbol[-15:]}  (${val:.3f}/d)"
                         picks[mode_name] = val_str
-                    
-                    print(
+
+                    self._vprint(
                         f"    {ticker:<8} | {picks['daily_ret/delta']:<30} | {picks['days_since_strike']:<30} | {picks['daily_return_on_collateral']:<30} | {picks['lowest_strike']:<30}"
                     )
         
         # Show which symbols had no passing options (diagnostic for completeness)
         symbols_no_opts = [s for s in symbols_to_check if s in all_filter_results_by_symbol and not all_filter_results_by_symbol[s][3]]
         if symbols_no_opts and all_failure_counts:
-            print(f"\n  {len(symbols_no_opts)} symbol(s) had no passing options: {symbols_no_opts}")
+            self._vprint(f"\n  {len(symbols_no_opts)} symbol(s) had no passing options: {symbols_no_opts}")
             reasons_str = ", ".join(f"{k}: {v}" for k, v in sorted(all_failure_counts.items(), key=lambda x: -x[1]))
-            print(f"  Aggregate fail reasons: {reasons_str}")
+            self._vprint(f"  Aggregate fail reasons: {reasons_str}")
         
         # === Order Entry ===
-        print(f"\n  {'='*80}")
-        print(f"  ORDER ENTRY \u2014 {len(candidates)} candidate(s)")
-        print(f"  {'='*80}")
+        self._vprint(f"\n  {'='*80}")
+        self._vprint(f"  ORDER ENTRY \u2014 {len(candidates)} candidate(s)")
+        self._vprint(f"  {'='*80}")
 
         current_vix = await _arun(self.vix_fetcher.get_current_vix)
 
@@ -1349,17 +1362,17 @@ class TradingLoop:
         remaining_cash = available_cash
         sized_orders = []
 
-        print(f"\n  Sizing pass: ${remaining_cash:,.0f} available")
+        self._vprint(f"\n  Sizing pass: ${remaining_cash:,.0f} available")
 
         for i, candidate in enumerate(candidates, 1):
             # Guard: skip contracts with missing Greeks
             if candidate.delta is None or candidate.implied_volatility is None:
-                print(f"  [{i}/{len(candidates)}] Skipping {candidate.underlying}: missing Greeks (delta={candidate.delta}, iv={candidate.implied_volatility})")
+                self._vprint(f"  [{i}/{len(candidates)}] Skipping {candidate.underlying}: missing Greeks (delta={candidate.delta}, iv={candidate.implied_volatility})")
                 continue
 
             collateral_per_contract = candidate.collateral_required
             if remaining_cash < collateral_per_contract:
-                print(f"  [{i}/{len(candidates)}] Skipping {candidate.underlying}: insufficient cash (need ${collateral_per_contract:,.0f}, have ${remaining_cash:,.0f})")
+                self._vprint(f"  [{i}/{len(candidates)}] Skipping {candidate.underlying}: insufficient cash (need ${collateral_per_contract:,.0f}, have ${remaining_cash:,.0f})")
                 continue
 
             qty = self.compute_target_quantity(collateral_per_contract, remaining_cash)
@@ -1367,7 +1380,7 @@ class TradingLoop:
 
             sized_orders.append((candidate, qty))
             remaining_cash -= total_collateral
-            print(f"  [{i}/{len(candidates)}] {candidate.underlying}: {qty} contracts, ${total_collateral:,.0f} collateral, ${remaining_cash:,.0f} remaining")
+            self._vprint(f"  [{i}/{len(candidates)}] {candidate.underlying}: {qty} contracts, ${total_collateral:,.0f} collateral, ${remaining_cash:,.0f} remaining")
 
         if not sized_orders:
             print(f"\n  No orders sized (insufficient cash or missing Greeks)")
@@ -1410,13 +1423,13 @@ class TradingLoop:
                 avail_capital = account_info['cash'] - short_collateral
                 target_pos = avail_capital * self.config.max_position_pct
                 
-                print(f"\n  {'='*60}")
-                print(f"  Alpaca cash:                    ${account_info['cash']:>12,.2f}")
-                print(f"  Short position collateral:      ${short_collateral:>12,.2f}")
-                print(f"  Available capital:               ${avail_capital:>12,.2f}")
-                print(f"  Max position size ({self.config.max_position_pct*100:.1f}%):     ${target_pos:>12,.2f}")
-                print(f"  Active positions:                {await self._get_position_count():>12}")
-                print(f"  {'='*60}")
+                self._vprint(f"\n  {'='*60}")
+                self._vprint(f"  Alpaca cash:                    ${account_info['cash']:>12,.2f}")
+                self._vprint(f"  Short position collateral:      ${short_collateral:>12,.2f}")
+                self._vprint(f"  Available capital:               ${avail_capital:>12,.2f}")
+                self._vprint(f"  Max position size ({self.config.max_position_pct*100:.1f}%):     ${target_pos:>12,.2f}")
+                self._vprint(f"  Active positions:                {await self._get_position_count():>12}")
+                self._vprint(f"  {'='*60}")
 
             # Check liquidate_all toggle
             if self.config.liquidate_all and self.alpaca_manager:
@@ -1545,12 +1558,15 @@ class TradingLoop:
         print(f"Paper Trading: {self.execution.paper}")
         print("=" * 60 + "\n")
 
+        if self.config.print_mode == "summary":
+            print(f"  {'Date':<12}| {'Time':<10}| {'Cycle':>5} | {'Deployable':>12} | {'VIX':>5} | {'Pos':>3} | {'Eq':>3} | {'Opts':>5} | {'Exits':>5} | {'Entries':>7}")
+
         try:
             while self._running:
                 cycle_count += 1
                 self._cycle_count = cycle_count
 
-                print(f"\n--- Cycle {cycle_count} @ {datetime.now(self.eastern).strftime('%Y-%m-%d %H:%M:%S %Z')} ---")
+                self._vprint(f"\n--- Cycle {cycle_count} @ {datetime.now(self.eastern).strftime('%Y-%m-%d %H:%M:%S %Z')} ---")
 
                 # Reset daily state if new trading day
                 today = datetime.now(self.eastern).date()
@@ -1568,17 +1584,29 @@ class TradingLoop:
                     break
 
                 # Print cycle summary
-                mode = "MONITOR-ONLY" if self._monitor_only else "ACTIVE"
-                print(f"  Mode: {mode}")
-                vix_val = summary.get('current_vix')
-                vix_str = f"{vix_val:.2f}" if isinstance(vix_val, (int, float)) else "N/A"
-                print(f"  VIX: {vix_str} | Deployable: ${summary.get('deployable_cash', 0):,.0f}")
-                print(f"  Market Open: {summary.get('market_open', False)}")
-                print(f"  Exits: {summary.get('exits', 0)}, Entries: {summary.get('entries', 0)}")
+                if self.config.print_mode == "summary":
+                    now = datetime.now(self.eastern)
+                    p = summary.get('portfolio', {})
+                    vix_val = summary.get('current_vix', 0)
+                    print(
+                        f"  {now.strftime('%Y-%m-%d'):<12}| {now.strftime('%H:%M:%S'):<10}| {cycle_count:>5} | "
+                        f"${summary.get('deployable_cash', 0):>11,.0f} | {vix_val:>5.1f} | "
+                        f"{p.get('active_positions', 0):>3} | {self._last_equity_passed:>3} | "
+                        f"{self._last_options_evaluated:>5} | {summary.get('exits', 0):>5} | "
+                        f"{summary.get('entries', 0):>7}"
+                    )
+                else:
+                    mode = "MONITOR-ONLY" if self._monitor_only else "ACTIVE"
+                    print(f"  Mode: {mode}")
+                    vix_val = summary.get('current_vix')
+                    vix_str = f"{vix_val:.2f}" if isinstance(vix_val, (int, float)) else "N/A"
+                    print(f"  VIX: {vix_str} | Deployable: ${summary.get('deployable_cash', 0):,.0f}")
+                    print(f"  Market Open: {summary.get('market_open', False)}")
+                    print(f"  Exits: {summary.get('exits', 0)}, Entries: {summary.get('entries', 0)}")
 
-                if 'portfolio' in summary:
-                    p = summary['portfolio']
-                    print(f"  Positions: {p['active_positions']}, Collateral: ${p['total_collateral']:,.2f}")
+                    if 'portfolio' in summary:
+                        p = summary['portfolio']
+                        print(f"  Positions: {p['active_positions']}, Collateral: ${p['total_collateral']:,.2f}")
 
                 # Log cycle
                 summary['monitor_only'] = self._monitor_only

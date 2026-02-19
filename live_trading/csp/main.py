@@ -14,6 +14,7 @@ Environment variables:
     GCS_PREFIX              GCS path prefix (default: "paper")
     POLL_INTERVAL           Seconds between cycles (default: 60)
     MAX_CYCLES              Max cycles before exit, 0=unlimited (default: 0)
+    PRINT_MODE              "summary" or "verbose" (default: summary)
 """
 
 import asyncio
@@ -68,6 +69,8 @@ def build_config() -> StrategyConfig:
         overrides["poll_interval_seconds"] = _env_int("POLL_INTERVAL", 60)
     if os.getenv("ENTRY_ORDER_TYPE"):
         overrides["entry_order_type"] = os.getenv("ENTRY_ORDER_TYPE")
+    if os.getenv("PRINT_MODE"):
+        overrides["print_mode"] = os.getenv("PRINT_MODE")
 
     return StrategyConfig(**overrides)
 
@@ -126,6 +129,7 @@ async def main():
         print(f"  GCS bucket:       {config.gcs_bucket_name}")
         print(f"  GCS prefix:       {config.gcs_prefix}")
     print(f"  Poll interval:    {config.poll_interval_seconds}s")
+    print(f"  Print mode:       {config.print_mode}")
     print(f"  Universe size:    {len(config.ticker_universe)} symbols")
 
     if dry_run:

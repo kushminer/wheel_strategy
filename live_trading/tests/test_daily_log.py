@@ -31,6 +31,7 @@ class TestLogConfig:
         assert data["config_snapshot"]["delta_stop_multiplier"] == config.delta_stop_multiplier
         assert data["config_snapshot"]["contract_rank_mode"] == config.contract_rank_mode
         assert data["config_snapshot"]["universe_rank_mode"] == config.universe_rank_mode
+        assert data["config_snapshot"]["print_mode"] == config.print_mode
 
 
 class TestLogEquityScan:
