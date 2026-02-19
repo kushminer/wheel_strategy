@@ -1,11 +1,16 @@
 """Central configuration for the CSP strategy."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import requests
 from io import StringIO
+
+if TYPE_CHECKING:
+    from covered_call.config import CoveredCallConfig
 
 
 def get_sp500_tickers() -> list:
@@ -139,6 +144,9 @@ class StrategyConfig:
     enable_stock_drop_stop: bool = False # Stock drop stop
     enable_vix_spike_stop: bool = True # VIX spike stop
     enable_early_exit: bool = True # Early exit
+
+    # ==================== COVERED CALL ====================
+    covered_call_config: Optional[CoveredCallConfig] = None
 
     # ==================== OUTPUT ====================
     print_mode: str = "summary"  # "summary" or "verbose"

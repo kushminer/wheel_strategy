@@ -94,6 +94,45 @@ class ExecutionEngine:
         except Exception as e:
             return OrderResult(success=False, order_id=None, message=f"Order failed: {e}")
 
+    def sell_stock(
+        self,
+        symbol: str,
+        quantity: int,
+        limit_price: Optional[float] = None,
+        time_in_force=TimeInForce.DAY,
+    ) -> OrderResult:
+        """Sell equity shares (used for wheel termination)."""
+        try:
+            if limit_price:
+                order_request = LimitOrderRequest(
+                    symbol=symbol, qty=quantity,
+                    side=OrderSide.SELL, limit_price=limit_price,
+                    time_in_force=time_in_force,
+                )
+            else:
+                order_request = MarketOrderRequest(
+                    symbol=symbol, qty=quantity,
+                    side=OrderSide.SELL, time_in_force=time_in_force,
+                )
+
+            order = self.trading_client.submit_order(order_request)
+            return OrderResult(
+                success=True,
+                order_id=str(order.id),
+                message=f"Stock sell order submitted: {order.status.value}",
+                order_details={
+                    'id': str(order.id),
+                    'symbol': order.symbol,
+                    'side': order.side.value,
+                    'qty': str(order.qty),
+                    'type': order.type.value,
+                    'status': order.status.value,
+                    'limit_price': str(order.limit_price) if order.limit_price else None,
+                },
+            )
+        except Exception as e:
+            return OrderResult(success=False, order_id=None, message=f"Stock sell failed: {e}")
+
     def get_order_status(self, order_id: str) -> Optional[dict]:
         try:
             order = self.trading_client.get_order_by_id(order_id)

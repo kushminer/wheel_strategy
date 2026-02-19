@@ -50,7 +50,8 @@ class TradingLoop:
         execution: ExecutionEngine,
         vix_fetcher: 'VixDataFetcher',
         greeks_calc: 'GreeksCalculator',
-        alpaca_manager: 'AlpacaClientManager' = None
+        alpaca_manager: 'AlpacaClientManager' = None,
+        cc_manager=None,
     ):
         self.config = config
         self.data_manager = data_manager
@@ -61,6 +62,7 @@ class TradingLoop:
         self.vix_fetcher = vix_fetcher
         self.greeks_calc = greeks_calc
         self.alpaca_manager = alpaca_manager
+        self.cc_manager = cc_manager
         
         self.eastern = pytz.timezone('US/Eastern')
         self._running = False
@@ -1503,6 +1505,15 @@ class TradingLoop:
                       for pos, rr, ep in exits_needed]
                 )
                 summary['exits'] = sum(1 for r in exit_results if r)
+
+            # Covered call management
+            if self.cc_manager:
+                try:
+                    cc_summary = await self.cc_manager.run_cycle(current_vix)
+                    summary['cc'] = cc_summary
+                except Exception as e:
+                    print(f"  CC Manager error: {e}")
+                    summary['errors'].append(f"cc_manager: {e}")
 
             # Scan for new entries (only if market is open and not monitor-only)
             if await self.is_market_open() and deployable_cash > 0 and not self._monitor_only:

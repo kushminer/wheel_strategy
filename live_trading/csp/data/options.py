@@ -307,3 +307,79 @@ class OptionsDataFetcher:
                 continue
 
         return result
+
+    def get_calls_chain(
+        self,
+        underlying: str,
+        stock_price: float,
+        min_dte: int = 1,
+        max_dte: int = 6,
+        min_strike_pct: float = 0.90,
+        max_strike_pct: float = 1.15,
+    ) -> List[OptionContract]:
+        """Get call options chain with full data for covered call selection.
+
+        Returns all call contracts in the DTE/strike range with snapshots
+        and Greeks populated.  Strike selection logic (by mode) lives in
+        the CoveredCallManager, not here.
+        """
+        min_strike = stock_price * min_strike_pct
+        max_strike = stock_price * max_strike_pct
+
+        contracts = self.get_option_contracts(
+            underlying=underlying,
+            contract_type="call",
+            min_dte=min_dte,
+            max_dte=max_dte,
+            min_strike=min_strike,
+            max_strike=max_strike,
+        )
+
+        if not contracts:
+            return []
+
+        symbols = [c["symbol"] for c in contracts]
+        snapshots = self.get_option_snapshots(symbols)
+
+        today = date.today()
+        result = []
+
+        for contract in contracts:
+            symbol = contract["symbol"]
+            try:
+                snapshot = snapshots.get(symbol, {})
+
+                bid = float(snapshot.get("bid", 0.0) or 0.0)
+                ask = float(snapshot.get("ask", 0.0) or 0.0)
+                if bid <= 0:
+                    continue
+
+                dte = (contract["expiration"] - today).days
+
+                option = OptionContract(
+                    symbol=symbol,
+                    underlying=underlying,
+                    contract_type="call",
+                    strike=contract["strike"],
+                    expiration=contract["expiration"],
+                    dte=dte,
+                    bid=bid,
+                    ask=ask,
+                    mid=(bid + ask) / 2,
+                    stock_price=stock_price,
+                    entry_time=datetime.now(pytz.timezone("US/Eastern")),
+                    delta=snapshot.get("delta"),
+                    gamma=snapshot.get("gamma"),
+                    theta=snapshot.get("theta"),
+                    vega=snapshot.get("vega"),
+                    implied_volatility=snapshot.get("implied_volatility"),
+                    volume=snapshot.get("volume"),
+                    open_interest=snapshot.get("open_interest") or contract.get("open_interest"),
+                )
+                result.append(option)
+
+            except Exception as e:
+                print(f"  Warning: Call chain fetch error for {contract.get('symbol')}: {e}")
+                continue
+
+        return result

@@ -72,6 +72,29 @@ def build_config() -> StrategyConfig:
     if os.getenv("PRINT_MODE"):
         overrides["print_mode"] = os.getenv("PRINT_MODE")
 
+    # Covered call config from env vars
+    if _env_bool("CC_ENABLED", False):
+        from covered_call.config import CoveredCallConfig
+
+        cc_overrides = {}
+        cc_overrides["enabled"] = True
+        if os.getenv("CC_STRIKE_MODE"):
+            cc_overrides["cc_strike_mode"] = os.getenv("CC_STRIKE_MODE")
+        if os.getenv("CC_STRIKE_DELTA"):
+            cc_overrides["cc_strike_delta"] = _env_float("CC_STRIKE_DELTA", 0.30)
+        if os.getenv("CC_STRIKE_PCT"):
+            cc_overrides["cc_strike_pct"] = _env_float("CC_STRIKE_PCT", 0.02)
+        if os.getenv("CC_MIN_DAILY_RETURN_PCT"):
+            cc_overrides["cc_min_daily_return_pct"] = _env_float("CC_MIN_DAILY_RETURN_PCT", 0.0015)
+        if os.getenv("CC_MIN_DTE"):
+            cc_overrides["cc_min_dte"] = _env_int("CC_MIN_DTE", 1)
+        if os.getenv("CC_MAX_DTE"):
+            cc_overrides["cc_max_dte"] = _env_int("CC_MAX_DTE", 6)
+        if os.getenv("CC_EXIT_MODE"):
+            cc_overrides["cc_exit_mode"] = os.getenv("CC_EXIT_MODE")
+
+        overrides["covered_call_config"] = CoveredCallConfig(**cc_overrides)
+
     return StrategyConfig(**overrides)
 
 
@@ -98,6 +121,30 @@ def build_components(config: StrategyConfig):
         backend=storage,
     )
 
+    # Covered call manager (optional)
+    cc_manager = None
+    cc_config = config.covered_call_config
+    if cc_config is not None and cc_config.enabled:
+        from covered_call.manager import CoveredCallManager
+        from covered_call.store import WheelPositionStore
+
+        wheel_store = WheelPositionStore(
+            path="wheel_positions.json",
+            backend=storage,
+        )
+        cc_manager = CoveredCallManager(
+            cc_config=cc_config,
+            strategy_config=config,
+            store=wheel_store,
+            data_manager=data_manager,
+            execution=execution,
+            risk_manager=risk_manager,
+            metadata_store=metadata,
+            alpaca_manager=alpaca,
+        )
+        print(f"  Covered calls:    ENABLED (mode={cc_config.cc_strike_mode}, "
+              f"exit={cc_config.cc_exit_mode})")
+
     loop = TradingLoop(
         config=config,
         data_manager=data_manager,
@@ -108,6 +155,7 @@ def build_components(config: StrategyConfig):
         vix_fetcher=vix_fetcher,
         greeks_calc=greeks_calc,
         alpaca_manager=alpaca,
+        cc_manager=cc_manager,
     )
 
     return loop
