@@ -314,7 +314,7 @@ class OptionsDataFetcher:
         stock_price: float,
         min_dte: int = 1,
         max_dte: int = 6,
-        min_strike_pct: float = 0.90,
+        min_strike_pct: float = 1.00,
         max_strike_pct: float = 1.15,
     ) -> List[OptionContract]:
         """Get call options chain with full data for covered call selection.

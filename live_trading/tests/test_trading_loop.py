@@ -161,11 +161,11 @@ class TestMonitorPositions:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         # Set up an active position in Alpaca + metadata
-        alpaca_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        alpaca_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
         comp['alpaca_manager'].trading_client.get_all_positions.return_value = [alpaca_pos]
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -176,7 +176,7 @@ class TestMonitorPositions:
 
         # Snapshot returns delta data
         comp['data_manager'].options_fetcher.get_option_snapshots.return_value = {
-            "AAPL260220P00220000": {'bid': 2.00, 'ask': 2.50, 'delta': -0.45},
+            "AAPL260320P00220000": {'bid': 2.00, 'ask': 2.50, 'delta': -0.45},
         }
 
         # Risk manager says exit
@@ -196,7 +196,7 @@ class TestMonitorPositions:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         # Position exists in Alpaca but NOT in metadata
-        alpaca_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        alpaca_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
         comp['alpaca_manager'].trading_client.get_all_positions.return_value = [alpaca_pos]
 
         exits = await loop.monitor_positions(current_vix=18.0)
@@ -208,11 +208,11 @@ class TestMonitorPositions:
             config=_make_config(exit_on_missing_delta=False),
         )
 
-        alpaca_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        alpaca_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
         comp['alpaca_manager'].trading_client.get_all_positions.return_value = [alpaca_pos]
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -223,7 +223,7 @@ class TestMonitorPositions:
 
         # Snapshot has no delta, and greeks calc also returns None
         comp['data_manager'].options_fetcher.get_option_snapshots.return_value = {
-            "AAPL260220P00220000": {'bid': 1.20, 'ask': 1.40, 'delta': None},
+            "AAPL260320P00220000": {'bid': 1.20, 'ask': 1.40, 'delta': None},
         }
         comp['greeks_calc'].compute_greeks_from_price.return_value = {'delta': None}
 
@@ -239,11 +239,11 @@ class TestMonitorPositions:
             config=_make_config(exit_on_missing_delta=True),
         )
 
-        alpaca_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        alpaca_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
         comp['alpaca_manager'].trading_client.get_all_positions.return_value = [alpaca_pos]
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -253,7 +253,7 @@ class TestMonitorPositions:
         )
 
         comp['data_manager'].options_fetcher.get_option_snapshots.return_value = {
-            "AAPL260220P00220000": {'bid': 1.20, 'ask': 1.40, 'delta': None},
+            "AAPL260320P00220000": {'bid': 1.20, 'ask': 1.40, 'delta': None},
         }
         comp['greeks_calc'].compute_greeks_from_price.return_value = {'delta': None}
 
@@ -304,7 +304,7 @@ class TestParallelMonitorPositions:
         """All positions are checked concurrently; risk_manager called for each."""
         loop, comp = _make_loop(tmp_path=tmp_path)
 
-        symbols = ["AAPL260220P00220000", "MSFT260220P00400000", "GOOG260220P00170000"]
+        symbols = ["AAPL260320P00220000", "MSFT260320P00400000", "GOOG260320P00170000"]
         positions = []
         for sym in symbols:
             underlying = sym[:4]
@@ -342,7 +342,7 @@ class TestParallelMonitorPositions:
         """One position snapshot raises exception; other positions still evaluated."""
         loop, comp = _make_loop(tmp_path=tmp_path)
 
-        symbols = ["AAPL260220P00220000", "MSFT260220P00400000"]
+        symbols = ["AAPL260320P00220000", "MSFT260320P00400000"]
         positions = []
         for sym in symbols:
             underlying = sym[:4]
@@ -394,7 +394,7 @@ class TestAssignmentDetection:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -420,7 +420,7 @@ class TestAssignmentDetection:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -430,7 +430,7 @@ class TestAssignmentDetection:
         )
 
         # Option is still present in Alpaca
-        option_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        option_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
         comp['alpaca_manager'].trading_client.get_all_positions.return_value = [option_pos]
 
         assignments = await loop._check_assignments()
@@ -440,7 +440,7 @@ class TestAssignmentDetection:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -466,7 +466,7 @@ class TestExecuteExit:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -493,7 +493,7 @@ class TestExecuteExit:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -530,7 +530,7 @@ class TestParallelExitExecution:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         # Set up two positions
-        for sym, underlying in [("AAPL260220P00220000", "AAPL"), ("MSFT260220P00400000", "MSFT")]:
+        for sym, underlying in [("AAPL260320P00220000", "AAPL"), ("MSFT260320P00400000", "MSFT")]:
             loop.metadata.record_entry(
                 option_symbol=sym,
                 underlying=underlying, strike=220.0,
@@ -542,8 +542,8 @@ class TestParallelExitExecution:
             )
 
         positions = [
-            make_position_proxy(symbol="AAPL", option_symbol="AAPL260220P00220000"),
-            make_position_proxy(symbol="MSFT", option_symbol="MSFT260220P00400000"),
+            make_position_proxy(symbol="AAPL", option_symbol="AAPL260320P00220000"),
+            make_position_proxy(symbol="MSFT", option_symbol="MSFT260320P00400000"),
         ]
         for pos in positions:
             pos.calculate_pnl = lambda ep, _p=pos: (_p.entry_premium - ep) * abs(_p.quantity) * 100
@@ -574,7 +574,7 @@ class TestParallelExitExecution:
         """One exit fails, other succeeds; count reflects partial success."""
         loop, comp = _make_loop(tmp_path=tmp_path)
 
-        for sym, underlying in [("AAPL260220P00220000", "AAPL"), ("MSFT260220P00400000", "MSFT")]:
+        for sym, underlying in [("AAPL260320P00220000", "AAPL"), ("MSFT260320P00400000", "MSFT")]:
             loop.metadata.record_entry(
                 option_symbol=sym,
                 underlying=underlying, strike=220.0,
@@ -586,8 +586,8 @@ class TestParallelExitExecution:
             )
 
         positions = [
-            make_position_proxy(symbol="AAPL", option_symbol="AAPL260220P00220000"),
-            make_position_proxy(symbol="MSFT", option_symbol="MSFT260220P00400000"),
+            make_position_proxy(symbol="AAPL", option_symbol="AAPL260320P00220000"),
+            make_position_proxy(symbol="MSFT", option_symbol="MSFT260320P00400000"),
         ]
         for pos in positions:
             pos.calculate_pnl = lambda ep, _p=pos: (_p.entry_premium - ep) * abs(_p.quantity) * 100
@@ -640,7 +640,7 @@ class TestScanAndEnter:
         loop._equity_scan_date = datetime.now(loop.eastern).date()
 
         # AAPL already has a position
-        alpaca_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        alpaca_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
         comp['alpaca_manager'].trading_client.get_all_positions.return_value = [alpaca_pos]
 
         result = await loop.scan_and_enter(deployable_cash=90000)
@@ -719,9 +719,9 @@ class TestFetchSymbolOptions:
         loop, comp = _make_loop(tmp_path=tmp_path, config=config)
 
         candidates = {
-            "AAPL": make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", bid=1.50),
-            "MSFT": make_option_contract(underlying="MSFT", symbol="MSFT260220P00400000", strike=400.0, bid=2.00),
-            "GOOG": make_option_contract(underlying="GOOG", symbol="GOOG260220P00170000", strike=170.0, bid=1.80),
+            "AAPL": make_option_contract(underlying="AAPL", symbol="AAPL260320P00220000", bid=1.50),
+            "MSFT": make_option_contract(underlying="MSFT", symbol="MSFT260320P00400000", strike=400.0, bid=2.00),
+            "GOOG": make_option_contract(underlying="GOOG", symbol="GOOG260320P00170000", strike=170.0, bid=1.80),
         }
 
         def mock_get_puts_chain(symbol, stock_price, config, sma_ceiling=None):
@@ -753,7 +753,7 @@ class TestFetchSymbolOptions:
         config = _make_config(ticker_universe=["AAPL", "MSFT", "GOOG"])
         loop, comp = _make_loop(tmp_path=tmp_path, config=config)
 
-        good_candidate = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", bid=1.50)
+        good_candidate = make_option_contract(underlying="AAPL", symbol="AAPL260320P00220000", bid=1.50)
 
         def mock_get_puts_chain(symbol, stock_price, config, sma_ceiling=None):
             if symbol == "MSFT":
@@ -1009,11 +1009,11 @@ class TestRunCycle:
         comp['vix_fetcher'].get_current_vix.return_value = 30.0
 
         # One active position
-        alpaca_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        alpaca_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
         comp['alpaca_manager'].trading_client.get_all_positions.return_value = [alpaca_pos]
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -1063,11 +1063,11 @@ class TestRunCycle:
         loop, comp = _make_loop(tmp_path=tmp_path)
 
         # One existing position
-        alpaca_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        alpaca_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
         comp['alpaca_manager'].trading_client.get_all_positions.return_value = [alpaca_pos]
 
         loop.metadata.record_entry(
-            option_symbol="AAPL260220P00220000",
+            option_symbol="AAPL260320P00220000",
             underlying="AAPL", strike=220.0,
             expiration=(date.today() + timedelta(days=5)).isoformat(),
             entry_delta=-0.25, entry_iv=0.30, entry_vix=18.0,
@@ -1078,7 +1078,7 @@ class TestRunCycle:
 
         # Snapshot needed for monitor_positions (to avoid warning)
         comp['data_manager'].options_fetcher.get_option_snapshots.return_value = {
-            "AAPL260220P00220000": {'bid': 1.20, 'ask': 1.40, 'delta': -0.25},
+            "AAPL260320P00220000": {'bid': 1.20, 'ask': 1.40, 'delta': -0.25},
         }
 
         # Scanner returns nothing passing equity
@@ -1109,7 +1109,7 @@ class TestBuildPositionProxy:
     def test_proxy_has_all_fields(self, tmp_path):
         loop, comp = _make_loop(tmp_path=tmp_path)
 
-        alpaca_pos = make_alpaca_position("AAPL260220P00220000", qty=-1, side="short")
+        alpaca_pos = make_alpaca_position("AAPL260320P00220000", qty=-1, side="short")
 
         meta = {
             'underlying': 'AAPL',
@@ -1127,7 +1127,7 @@ class TestBuildPositionProxy:
         proxy = loop._build_position_proxy(alpaca_pos, meta)
 
         assert proxy.symbol == 'AAPL'
-        assert proxy.option_symbol == 'AAPL260220P00220000'
+        assert proxy.option_symbol == 'AAPL260320P00220000'
         assert proxy.strike == 220.0
         assert proxy.entry_delta == -0.25
         assert proxy.entry_premium == 1.50
@@ -1257,11 +1257,11 @@ class TestSequentialSizing:
         # AAPL: bid=4.40, dte=5, strike=220 -> 4.40/5/220 = 0.004
         # MSFT: bid=2.25, dte=5, strike=150 -> 2.25/5/150 = 0.003
         # GOOG: bid=1.00, dte=5, strike=100 -> 1.00/5/100 = 0.002
-        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", strike=220.0,
+        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260320P00220000", strike=220.0,
                                      stock_price=230.0, bid=4.40, ask=4.60, mid=4.50)
-        msft = make_option_contract(underlying="MSFT", symbol="MSFT260220P00150000", strike=150.0,
+        msft = make_option_contract(underlying="MSFT", symbol="MSFT260320P00150000", strike=150.0,
                                      stock_price=160.0, bid=2.25, ask=2.45, mid=2.35)
-        goog = make_option_contract(underlying="GOOG", symbol="GOOG260220P00100000", strike=100.0,
+        goog = make_option_contract(underlying="GOOG", symbol="GOOG260320P00100000", strike=100.0,
                                      stock_price=110.0, bid=1.00, ask=1.20, mid=1.10)
 
         # Pre-cache equity scan so scan_and_enter skips the scan step
@@ -1314,9 +1314,9 @@ class TestSequentialSizing:
         comp['alpaca_manager'].compute_available_capital.return_value = 25_000
 
         # AAPL: 4.40/5/220 = 0.004, MSFT: 3.00/5/200 = 0.003 -> AAPL ranks first
-        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", strike=220.0,
+        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260320P00220000", strike=220.0,
                                      stock_price=230.0, bid=4.40, ask=4.60, mid=4.50)
-        msft = make_option_contract(underlying="MSFT", symbol="MSFT260220P00200000", strike=200.0,
+        msft = make_option_contract(underlying="MSFT", symbol="MSFT260320P00200000", strike=200.0,
                                      stock_price=210.0, bid=3.00, ask=3.20, mid=3.10)
 
         import pytz
@@ -1366,9 +1366,9 @@ class TestParallelEntryExecution:
         loop, comp = _make_loop(tmp_path=tmp_path, config=config)
         comp['alpaca_manager'].compute_available_capital.return_value = 500_000
 
-        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", strike=220.0,
+        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260320P00220000", strike=220.0,
                                      stock_price=230.0, bid=1.50, ask=1.70, mid=1.60)
-        msft = make_option_contract(underlying="MSFT", symbol="MSFT260220P00400000", strike=400.0,
+        msft = make_option_contract(underlying="MSFT", symbol="MSFT260320P00400000", strike=400.0,
                                      stock_price=420.0, bid=2.00, ask=2.20, mid=2.10)
 
         import pytz
@@ -1412,9 +1412,9 @@ class TestParallelEntryExecution:
         loop, comp = _make_loop(tmp_path=tmp_path, config=config)
         comp['alpaca_manager'].compute_available_capital.return_value = 500_000
 
-        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260220P00220000", strike=220.0,
+        aapl = make_option_contract(underlying="AAPL", symbol="AAPL260320P00220000", strike=220.0,
                                      stock_price=230.0, bid=1.50, ask=1.70, mid=1.60)
-        msft = make_option_contract(underlying="MSFT", symbol="MSFT260220P00400000", strike=400.0,
+        msft = make_option_contract(underlying="MSFT", symbol="MSFT260320P00400000", strike=400.0,
                                      stock_price=420.0, bid=2.00, ask=2.20, mid=2.10)
 
         import pytz

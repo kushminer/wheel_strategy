@@ -26,24 +26,20 @@ class TestCoveredCallConfig:
         cfg = CoveredCallConfig()
         assert cfg.enabled is False
         assert cfg.cc_min_dte == 1
-        assert cfg.cc_max_dte == 6
+        assert cfg.cc_max_dte == 10
         assert cfg.cc_strike_mode == "delta"
         assert cfg.cc_strike_delta == 0.30
         assert cfg.cc_strike_pct == 0.02
         assert cfg.cc_min_daily_return_pct == 0.0015
-        assert cfg.cc_exit_mode == "strike_recovery"
-
     def test_custom_values(self):
         cfg = CoveredCallConfig(
             enabled=True,
             cc_strike_mode="min_daily_return",
             cc_min_daily_return_pct=0.002,
-            cc_exit_mode="premium_recovery",
         )
         assert cfg.enabled is True
         assert cfg.cc_strike_mode == "min_daily_return"
         assert cfg.cc_min_daily_return_pct == 0.002
-        assert cfg.cc_exit_mode == "premium_recovery"
 
 
 # ── Store Tests ──────────────────────────────────────────────────

@@ -62,8 +62,12 @@ class CoveredCallManager:
         """Run one CC management cycle.
 
         1. Detect new stock positions needing CC management
-        2. For each wheel position: check termination, enter CC, or monitor
-        3. Persist state
+        2. For each wheel position: enter CC or monitor active CC
+        3. CC terminates only when: expired, assigned, or early-exit met
+
+        No pre-entry termination check — the CC runs its natural course.
+        Assignment is the natural exit when the stock recovers above the
+        CC strike.
         """
         summary = {"cc_detected": 0, "cc_entered": 0, "cc_exited": 0, "cc_terminated": 0}
 
@@ -82,12 +86,8 @@ class CoveredCallManager:
             status = pos.get("status")
 
             if status == "awaiting_cc_entry":
-                # Check termination first
-                if await self._check_termination(underlying, pos, current_vix):
-                    summary["cc_terminated"] += 1
-                    continue
-
-                # Enter a new covered call
+                # Always enter a CC — the exit comes from assignment,
+                # expiration, or early-exit on the active contract.
                 if await self._enter_covered_call(underlying, pos, current_vix):
                     summary["cc_entered"] += 1
 
@@ -180,65 +180,6 @@ class CoveredCallManager:
         avg_price = float(alpaca_pos.avg_entry_price) if alpaca_pos.avg_entry_price else 0.0
         return (avg_price, "alpaca_position", None)
 
-    # ── Termination check ─────────────────────────────────────────
-
-    async def _check_termination(
-        self, underlying: str, pos: dict, current_vix: float
-    ) -> bool:
-        """Check if the wheel position should be terminated.
-
-        strike_recovery: Best available CC strike >= cost_basis
-        premium_recovery: Total CC premiums >= unrealized loss at assignment
-        """
-        mode = self.cc_config.cc_exit_mode
-        cost_basis = pos.get("cost_basis", 0)
-
-        if mode == "premium_recovery":
-            total_premiums = pos.get("total_cc_premiums", 0)
-            try:
-                stock_price = await _arun(
-                    self.data_manager.equity_fetcher.get_current_price, underlying
-                )
-            except Exception:
-                return False
-
-            assignment_loss = max(cost_basis - stock_price, 0)
-            csp_premium = pos.get("csp_entry_premium") or 0
-            net_loss = assignment_loss - csp_premium
-
-            if total_premiums >= net_loss and net_loss > 0:
-                print(f"  CC TERMINATION ({underlying}): Premium recovery achieved")
-                print(f"    CC premiums: ${total_premiums:.2f} >= net loss: ${net_loss:.2f}")
-                await self._sell_shares(underlying, pos)
-                return True
-
-        elif mode == "strike_recovery":
-            try:
-                stock_price = await _arun(
-                    self.data_manager.equity_fetcher.get_current_price, underlying
-                )
-                calls = await _arun(
-                    self.data_manager.options_fetcher.get_calls_chain,
-                    underlying, stock_price,
-                    self.cc_config.cc_min_dte, self.cc_config.cc_max_dte,
-                )
-            except Exception as e:
-                self._vprint(f"  CC: Could not check termination for {underlying}: {e}")
-                return False
-
-            if not calls:
-                return False
-
-            # Check if any available CC strike >= cost_basis
-            best_strike = max(c.strike for c in calls)
-            if best_strike >= cost_basis:
-                print(f"  CC TERMINATION ({underlying}): Strike recovery achieved")
-                print(f"    Best CC strike: ${best_strike:.2f} >= cost basis: ${cost_basis:.2f}")
-                await self._sell_shares(underlying, pos)
-                return True
-
-        return False
-
     # ── CC entry ──────────────────────────────────────────────────
 
     async def _enter_covered_call(
@@ -259,13 +200,16 @@ class CoveredCallManager:
                 self.data_manager.options_fetcher.get_calls_chain,
                 underlying, stock_price,
                 self.cc_config.cc_min_dte, self.cc_config.cc_max_dte,
+                self.cc_config.cc_min_strike_pct, self.cc_config.cc_max_strike_pct,
             )
         except Exception as e:
             print(f"  CC: Could not fetch calls for {underlying}: {e}")
             return False
 
         if not calls:
-            self._vprint(f"  CC: No call contracts available for {underlying}")
+            print(f"  CC: No call contracts available for {underlying}")
+            if self.cc_config.cc_verbose:
+                await self._diagnose_empty_chain(underlying, stock_price)
             return False
 
         # Select contract by mode
@@ -280,8 +224,11 @@ class CoveredCallManager:
         if qty <= 0:
             return False
 
+        cost_basis = pos.get("cost_basis", 0)
         delta_str = f"{abs(selected.delta):.3f}" if selected.delta else "N/A"
-        print(f"\n  CC ENTRY: {underlying} — {selected.symbol}")
+        now_et = datetime.now(self.eastern).strftime("%H:%M:%S ET")
+        print(f"\n  CC ENTRY: {underlying} — {selected.symbol}  [{now_et}]")
+        print(f"    Stock: ${stock_price:.2f} | Cost basis: ${cost_basis:.2f}")
         print(f"    Strike: ${selected.strike:.2f} | DTE: {selected.dte} | Delta: {delta_str}")
         print(f"    Bid: ${selected.bid:.2f} | Ask: ${selected.ask:.2f} | Qty: {qty}")
 
@@ -376,7 +323,9 @@ class CoveredCallManager:
                      f"bid=${bid:.2f}, ask=${ask:.2f}, spread=${spread:.2f}")
 
         for step in range(cfg.entry_max_steps + 1):
-            self._vprint(f"    Step {step}/{cfg.entry_max_steps}: limit @ ${limit_price:.2f}")
+            now_et = datetime.now(self.eastern).strftime("%H:%M:%S")
+            self._vprint(f"    Step {step}/{cfg.entry_max_steps} [{now_et}]: "
+                         f"limit=${limit_price:.2f} | bid=${bid:.2f} ask=${ask:.2f}")
 
             result = await _arun(
                 self.execution.sell_to_open,
@@ -434,6 +383,7 @@ class CoveredCallManager:
                 mid = (bid + ask) / 2
                 spread = ask - bid
                 price_floor = max(bid, mid - (cfg.entry_max_steps * cfg.entry_step_pct * spread))
+                self._vprint(f"    Refreshed: bid=${bid:.2f} ask=${ask:.2f} mid=${mid:.2f}")
 
             next_step = step + 1
             if cfg.entry_start_price == "mid":
@@ -714,79 +664,94 @@ class CoveredCallManager:
 
         return None
 
-    # ── Share liquidation ─────────────────────────────────────────
+    # ── Diagnostics ─────────────────────────────────────────────
 
-    async def _sell_shares(self, underlying: str, pos: dict):
-        """Sell all shares via stepped limit order (termination)."""
-        shares = pos.get("shares", 0)
-        if shares <= 0:
-            self.store.terminate(underlying, reason="no_shares")
-            return
+    async def _diagnose_empty_chain(self, underlying: str, stock_price: float):
+        """Print detailed diagnostics explaining why no call contracts were returned.
 
-        # Get current stock quote for stepped pricing
+        Checks each stage of the pipeline to pinpoint the cause:
+        1. Are there ANY call contracts in the configured DTE range (ignoring strike)?
+        2. How many fall within the configured strike range?
+        3. How many have snapshots / liquidity (bid > 0)?
+        4. If nothing in the current DTE range, when is the nearest expiry?
+        """
+        cc = self.cc_config
+        min_strike = stock_price * cc.cc_min_strike_pct
+        max_strike = stock_price * cc.cc_max_strike_pct
+
+        print(f"\n    ── CC Diagnostic: {underlying} @ ${stock_price:.2f} ──")
+        print(f"    Config: DTE {cc.cc_min_dte}-{cc.cc_max_dte} | "
+              f"Strike ${min_strike:.2f}-${max_strike:.2f} "
+              f"({cc.cc_min_strike_pct:.0%}-{cc.cc_max_strike_pct:.0%} of price)")
+
+        # Step 1: Fetch all calls in DTE range WITHOUT strike filter
         try:
-            stock_price = await _arun(
-                self.data_manager.equity_fetcher.get_current_price, underlying
+            all_contracts = await _arun(
+                self.data_manager.options_fetcher.get_option_contracts,
+                underlying=underlying,
+                contract_type="call",
+                min_dte=cc.cc_min_dte,
+                max_dte=cc.cc_max_dte,
             )
         except Exception as e:
-            print(f"  CC: Could not get price for share sale of {underlying}: {e}")
-            # Fallback to market order
-            result = await _arun(
-                self.execution.sell_stock, underlying, shares
-            )
-            if result.success:
-                print(f"    Shares sold (market): {underlying} x {shares}")
-                self.store.terminate(underlying, reason="shares_sold_market")
-            else:
-                print(f"    Share sale failed: {result.message}")
+            print(f"    API error: {e}")
             return
 
-        # Use stepped limit: start at a reasonable price, step down
-        cfg = self.config
-        limit_price = round(stock_price * 0.999, 2)  # Start just below current price
-        price_floor = round(stock_price * 0.995, 2)   # Floor at 0.5% below
+        if not all_contracts:
+            print(f"    Result: API returned 0 call contracts in DTE {cc.cc_min_dte}-{cc.cc_max_dte}")
 
-        print(f"  Selling {shares} shares of {underlying} @ ~${limit_price:.2f}")
+            # Check wider DTE range for nearest expiry
+            try:
+                wider = await _arun(
+                    self.data_manager.options_fetcher.get_option_contracts,
+                    underlying=underlying,
+                    contract_type="call",
+                    min_dte=1,
+                    max_dte=45,
+                )
+            except Exception:
+                wider = []
 
-        for step in range(cfg.exit_max_steps + 1):
-            result = await _arun(
-                self.execution.sell_stock,
-                underlying, shares,
-                limit_price=limit_price,
+            if wider:
+                expirations = sorted(set(c["expiration"] for c in wider))
+                print(f"    Nearest call expirations (DTE 1-45): "
+                      f"{', '.join(str(e) for e in expirations[:5])}")
+            else:
+                print(f"    No call contracts found even in DTE 1-45 range")
+            return
+
+        # Step 2: How many are in the configured strike range?
+        in_range = [c for c in all_contracts
+                    if min_strike <= c["strike"] <= max_strike]
+
+        print(f"    API contracts in DTE range: {len(all_contracts)}")
+        print(f"    In strike range: {len(in_range)}")
+
+        if not in_range:
+            strikes = sorted(c["strike"] for c in all_contracts)
+            print(f"    All strikes outside range. Available: "
+                  f"${strikes[0]:.2f} - ${strikes[-1]:.2f}")
+            return
+
+        # Step 3: Check snapshots / liquidity
+        symbols = [c["symbol"] for c in in_range]
+        try:
+            snapshots = await _arun(
+                self.data_manager.options_fetcher.get_option_snapshots, symbols
             )
+        except Exception as e:
+            print(f"    Snapshot fetch error: {e}")
+            return
 
-            if not result.success:
-                break
+        has_snapshot = sum(1 for s in symbols if s in snapshots)
+        has_bid = sum(1 for s in symbols
+                      if float(snapshots.get(s, {}).get("bid", 0) or 0) > 0)
 
-            order_id = result.order_id
-            await asyncio.sleep(cfg.exit_step_interval)
+        print(f"    With snapshot data: {has_snapshot}/{len(symbols)}")
+        print(f"    With bid > 0 (liquid): {has_bid}/{len(symbols)}")
 
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status["status"] in ("filled", "partially_filled"):
-                filled = status.get("filled_avg_price", limit_price)
-                print(f"    Shares sold @ ${filled}")
-                self.store.terminate(underlying, reason="shares_sold")
-                return
+        if has_bid == 0:
+            print(f"    Result: All contracts have $0 bid — no liquidity")
+        elif has_snapshot < len(symbols):
+            print(f"    Result: {len(symbols) - has_snapshot} contracts missing snapshot data")
 
-            await _arun(self.execution.cancel_order, order_id)
-            await asyncio.sleep(1)
-
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status["status"] in ("filled", "partially_filled"):
-                self.store.terminate(underlying, reason="shares_sold")
-                return
-
-            if step >= cfg.exit_max_steps:
-                break
-
-            # Step down
-            limit_price = round(limit_price - (stock_price * 0.001), 2)
-            limit_price = max(limit_price, price_floor)
-
-        # Fallback to market
-        print(f"    Stepped share sale exhausted, using market order")
-        result = await _arun(self.execution.sell_stock, underlying, shares)
-        if result.success:
-            self.store.terminate(underlying, reason="shares_sold_market")
-        else:
-            print(f"    Market share sale also failed: {result.message}")

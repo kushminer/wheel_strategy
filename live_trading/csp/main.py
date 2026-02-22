@@ -90,9 +90,6 @@ def build_config() -> StrategyConfig:
             cc_overrides["cc_min_dte"] = _env_int("CC_MIN_DTE", 1)
         if os.getenv("CC_MAX_DTE"):
             cc_overrides["cc_max_dte"] = _env_int("CC_MAX_DTE", 6)
-        if os.getenv("CC_EXIT_MODE"):
-            cc_overrides["cc_exit_mode"] = os.getenv("CC_EXIT_MODE")
-
         overrides["covered_call_config"] = CoveredCallConfig(**cc_overrides)
 
     return StrategyConfig(**overrides)
@@ -143,7 +140,7 @@ def build_components(config: StrategyConfig):
             alpaca_manager=alpaca,
         )
         print(f"  Covered calls:    ENABLED (mode={cc_config.cc_strike_mode}, "
-              f"exit={cc_config.cc_exit_mode})")
+              f"DTE={cc_config.cc_min_dte}-{cc_config.cc_max_dte})")
 
     loop = TradingLoop(
         config=config,
