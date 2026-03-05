@@ -78,5 +78,25 @@
     "exit_reason": null,
     "exit_details": null,
     "exit_order_id": null
+  },
+  "DLTR260227P00125000": {
+    "underlying": "DLTR",
+    "option_symbol": "DLTR260227P00125000",
+    "strike": 125.0,
+    "expiration": "2026-02-27",
+    "entry_date": "2026-02-23T14:50:34.913222",
+    "entry_delta": -0.2274,
+    "entry_iv": 0.5821,
+    "entry_vix": 21.309999465942383,
+    "entry_stock_price": 130.57,
+    "entry_premium": 0.9,
+    "entry_daily_return": 0.0016848636445045595,
+    "dte_at_entry": 4,
+    "quantity": -3,
+    "entry_order_id": "42304b45-9ad0-40a5-9ba4-d7434a49f838",
+    "exit_date": null,
+    "exit_reason": null,
+    "exit_details": null,
+    "exit_order_id": null
   }
 }

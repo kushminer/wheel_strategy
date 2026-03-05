@@ -10,15 +10,15 @@ import pytest
 from csp.config import StrategyConfig
 from csp.data.greeks import GreeksCalculator
 from csp.signals.scanner import StrategyScanner, ScanResult
+from equity_screener.config import EquityScreenerConfig
 
 from tests.conftest import make_option_contract, make_price_series
 
 
 @pytest.fixture
-def config():
-    return StrategyConfig(
-        ticker_universe=["AAPL", "MSFT"],
-        # Disable most equity checks for predictable tests
+def equity_screener_config():
+    """Disable most equity checks for predictable tests."""
+    return EquityScreenerConfig(
         enable_sma8_check=False,
         enable_sma20_check=False,
         enable_sma50_check=False,
@@ -26,7 +26,13 @@ def config():
         enable_band_check=False,
         enable_sma50_trend_check=False,
         enable_rsi_check=False,
-        enable_position_size_check=False,
+    )
+
+
+@pytest.fixture
+def config():
+    return StrategyConfig(
+        ticker_universe=["AAPL", "MSFT"],
         # Options filter
         min_daily_return=0.0010,
         delta_min=0.0,
@@ -80,8 +86,11 @@ def mock_options_fetcher(good_puts):
 
 
 @pytest.fixture
-def scanner(config, mock_equity_fetcher, mock_options_fetcher, greeks_calc):
-    return StrategyScanner(config, mock_equity_fetcher, mock_options_fetcher, greeks_calc)
+def scanner(config, mock_equity_fetcher, mock_options_fetcher, greeks_calc, equity_screener_config):
+    return StrategyScanner(
+        config, mock_equity_fetcher, mock_options_fetcher, greeks_calc,
+        equity_screener_config=equity_screener_config,
+    )
 
 
 # ── Basic scan ──────────────────────────────────────────────────
@@ -98,9 +107,12 @@ class TestScanSymbol:
 
     def test_equity_fails_returns_empty_candidates(self, config, mock_options_fetcher, greeks_calc):
         # Enable SMA50 trend check so flat prices fail
-        config.enable_sma50_trend_check = True
+        strict_eq = EquityScreenerConfig(enable_sma50_trend_check=True)
         eq_fetcher = MagicMock()
-        scanner = StrategyScanner(config, eq_fetcher, mock_options_fetcher, greeks_calc)
+        scanner = StrategyScanner(
+            config, eq_fetcher, mock_options_fetcher, greeks_calc,
+            equity_screener_config=strict_eq,
+        )
 
         flat_prices = pd.Series([100.0] * 60, index=pd.bdate_range(end=date.today(), periods=60))
         result = scanner.scan_symbol("TEST", flat_prices)
@@ -110,9 +122,12 @@ class TestScanSymbol:
         mock_options_fetcher.get_puts_chain.assert_not_called()
 
     def test_skip_equity_filter_fetches_anyway(self, config, mock_options_fetcher, greeks_calc):
-        config.enable_sma50_trend_check = True
+        strict_eq = EquityScreenerConfig(enable_sma50_trend_check=True)
         eq_fetcher = MagicMock()
-        scanner = StrategyScanner(config, eq_fetcher, mock_options_fetcher, greeks_calc)
+        scanner = StrategyScanner(
+            config, eq_fetcher, mock_options_fetcher, greeks_calc,
+            equity_screener_config=strict_eq,
+        )
 
         flat_prices = pd.Series([100.0] * 60, index=pd.bdate_range(end=date.today(), periods=60))
         result = scanner.scan_symbol("TEST", flat_prices, skip_equity_filter=True)

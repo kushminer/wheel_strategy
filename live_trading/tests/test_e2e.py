@@ -21,6 +21,7 @@ from csp.trading.metadata import StrategyMetadataStore
 from csp.trading.daily_log import DailyLog
 from csp.trading.execution import ExecutionEngine
 from csp.trading.models import ExitReason
+from equity_screener.config import EquityScreenerConfig
 
 from tests.conftest import (
     make_option_contract,
@@ -35,15 +36,6 @@ def config():
     return StrategyConfig(
         ticker_universe=["AAPL", "MSFT"],
         starting_cash=100_000,
-        # Disable equity checks for simplicity
-        enable_sma8_check=False,
-        enable_sma20_check=False,
-        enable_sma50_check=False,
-        enable_bb_upper_check=False,
-        enable_band_check=False,
-        enable_sma50_trend_check=False,
-        enable_rsi_check=False,
-        enable_position_size_check=False,
         # Options filter
         min_daily_return=0.0010,
         delta_min=0.0,
@@ -72,6 +64,20 @@ def risk(config):
 
 
 @pytest.fixture
+def eq_screener_config():
+    """Disable equity checks for e2e simplicity."""
+    return EquityScreenerConfig(
+        enable_sma8_check=False,
+        enable_sma20_check=False,
+        enable_sma50_check=False,
+        enable_bb_upper_check=False,
+        enable_band_check=False,
+        enable_sma50_trend_check=False,
+        enable_rsi_check=False,
+    )
+
+
+@pytest.fixture
 def metadata(tmp_path):
     return StrategyMetadataStore(path=str(tmp_path / "metadata.json"))
 
@@ -87,7 +93,7 @@ def daily_log(tmp_path):
 class TestFullCycleEntryThenExit:
     """Simulate: VIX check → scan → find candidate → enter → delta stop → exit → verify metadata."""
 
-    def test_entry_then_delta_stop_exit(self, config, greeks_calc, risk, metadata, daily_log):
+    def test_entry_then_delta_stop_exit(self, config, greeks_calc, risk, metadata, daily_log, eq_screener_config):
         # 1. VIX check: VIX=18 → multiplier=0.9 → deployable=$90,000
         vix = 18.0
         deployable = config.get_deployable_cash(vix)
@@ -112,7 +118,10 @@ class TestFullCycleEntryThenExit:
         mock_opt_fetcher = MagicMock()
         mock_opt_fetcher.get_puts_chain.return_value = [good_put]
 
-        scanner = StrategyScanner(config, mock_eq_fetcher, mock_opt_fetcher, greeks_calc)
+        scanner = StrategyScanner(
+            config, mock_eq_fetcher, mock_opt_fetcher, greeks_calc,
+            equity_screener_config=eq_screener_config,
+        )
         result = scanner.scan_symbol("AAPL", mock_eq_fetcher.get_close_history()["AAPL"])
         assert result.has_candidates is True
         candidate = result.options_candidates[0]
@@ -189,7 +198,7 @@ class TestFullCycleEntryThenExit:
 class TestNoCandidatesMonitorOnly:
     """Scan returns no candidates → monitor mode only."""
 
-    def test_no_candidates_returns_empty(self, config, greeks_calc):
+    def test_no_candidates_returns_empty(self, config, greeks_calc, eq_screener_config):
         mock_eq = MagicMock()
         mock_eq.get_close_history.return_value = {
             "AAPL": make_price_series(base=230.0, n=60, trend="up"),
@@ -197,7 +206,10 @@ class TestNoCandidatesMonitorOnly:
         mock_opt = MagicMock()
         mock_opt.get_puts_chain.return_value = []  # no puts available
 
-        scanner = StrategyScanner(config, mock_eq, mock_opt, greeks_calc)
+        scanner = StrategyScanner(
+            config, mock_eq, mock_opt, greeks_calc,
+            equity_screener_config=eq_screener_config,
+        )
         results = scanner.scan_universe()
         all_candidates = []
         for r in results:

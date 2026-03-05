@@ -13,15 +13,14 @@ from csp.signals.equity_filter import (
     EquityFilterResult,
     FomcCalendar,
 )
+from equity_screener.config import EquityScreenerConfig
 
 from tests.conftest import make_price_series
 
 
 @pytest.fixture
 def config():
-    return StrategyConfig(
-        ticker_universe=["AAPL"],
-        starting_cash=1_000_000,
+    return EquityScreenerConfig(
         enable_sma8_check=True,
         enable_sma20_check=True,
         enable_sma50_check=True,
@@ -29,7 +28,6 @@ def config():
         enable_band_check=True,
         enable_sma50_trend_check=True,
         enable_rsi_check=True,
-        enable_position_size_check=True,
     )
 
 
@@ -66,15 +64,13 @@ class TestSMAChecks:
 
     def test_fails_when_price_below_sma50(self):
         # Price below SMA50 — steadily falling
-        config = StrategyConfig(
-            ticker_universe=["TEST"],
+        config = EquityScreenerConfig(
             enable_sma8_check=False,
             enable_sma20_check=False,
             enable_sma50_check=True,
             enable_band_check=False,
             enable_sma50_trend_check=False,
             enable_rsi_check=False,
-            enable_position_size_check=False,
         )
         ef = EquityFilter(config)
         prices = make_price_series(base=230.0, n=60, trend="down", seed=42)
@@ -87,12 +83,10 @@ class TestSMAChecks:
 
 class TestRSICheck:
     def test_fails_when_rsi_overbought(self):
-        config = StrategyConfig(
-            ticker_universe=["TEST"],
+        config = EquityScreenerConfig(
             enable_sma8_check=False, enable_sma20_check=False,
             enable_sma50_check=False, enable_band_check=False,
             enable_sma50_trend_check=False, enable_rsi_check=True,
-            enable_position_size_check=False,
             rsi_upper=70,
         )
         ef = EquityFilter(config)
@@ -110,12 +104,10 @@ class TestRSICheck:
             assert any("RSI" in r for r in result.failure_reasons)
 
     def test_fails_when_rsi_oversold(self):
-        config = StrategyConfig(
-            ticker_universe=["TEST"],
+        config = EquityScreenerConfig(
             enable_sma8_check=False, enable_sma20_check=False,
             enable_sma50_check=False, enable_band_check=False,
             enable_sma50_trend_check=False, enable_rsi_check=True,
-            enable_position_size_check=False,
             rsi_lower=30,
         )
         ef = EquityFilter(config)
@@ -135,12 +127,10 @@ class TestRSICheck:
 
 class TestSMA50Trend:
     def test_fails_when_not_trending(self):
-        config = StrategyConfig(
-            ticker_universe=["TEST"],
+        config = EquityScreenerConfig(
             enable_sma8_check=False, enable_sma20_check=False,
             enable_sma50_check=False, enable_band_check=False,
             enable_sma50_trend_check=True, enable_rsi_check=False,
-            enable_position_size_check=False,
         )
         ef = EquityFilter(config)
         # Flat prices => SMA50 not trending
@@ -148,25 +138,6 @@ class TestSMA50Trend:
         result = ef.evaluate("TEST", prices)
         assert result.passes is False
         assert any("SMA(50) not trending" in r for r in result.failure_reasons)
-
-
-class TestPositionSize:
-    def test_fails_when_too_large(self):
-        config = StrategyConfig(
-            ticker_universe=["TEST"],
-            starting_cash=100_000,
-            max_position_pct=0.10,  # $10,000 max
-            enable_sma8_check=False, enable_sma20_check=False,
-            enable_sma50_check=False, enable_band_check=False,
-            enable_sma50_trend_check=False, enable_rsi_check=False,
-            enable_position_size_check=True,
-        )
-        ef = EquityFilter(config)
-        # Stock at $150 -> collateral = $15,000 > $10,000
-        prices = pd.Series([150.0] * 60, index=pd.bdate_range(end=date.today(), periods=60))
-        result = ef.evaluate("TEST", prices)
-        assert result.passes is False
-        assert any("Collateral" in r for r in result.failure_reasons)
 
 
 class TestInsufficientHistory:
@@ -179,12 +150,11 @@ class TestInsufficientHistory:
 
 class TestEnableFlags:
     def test_all_disabled_passes(self):
-        config = StrategyConfig(
-            ticker_universe=["TEST"],
+        config = EquityScreenerConfig(
             enable_sma8_check=False, enable_sma20_check=False,
             enable_sma50_check=False, enable_bb_upper_check=False,
             enable_band_check=False, enable_sma50_trend_check=False,
-            enable_rsi_check=False, enable_position_size_check=False,
+            enable_rsi_check=False,
         )
         ef = EquityFilter(config)
         prices = pd.Series([100.0] * 60, index=pd.bdate_range(end=date.today(), periods=60))
@@ -197,12 +167,11 @@ class TestEnableFlags:
 
 class TestFilterUniverse:
     def test_returns_passing_and_all(self):
-        config = StrategyConfig(
-            ticker_universe=["AAPL", "MSFT"],
+        config = EquityScreenerConfig(
             enable_sma8_check=False, enable_sma20_check=False,
             enable_sma50_check=False, enable_bb_upper_check=False,
             enable_band_check=False, enable_sma50_trend_check=False,
-            enable_rsi_check=False, enable_position_size_check=False,
+            enable_rsi_check=False,
         )
         ef = EquityFilter(config)
         history = {
@@ -243,8 +212,7 @@ class TestFomcCalendar:
 class TestCheckEvents:
     def test_fomc_rejects_all(self):
         """When FOMC is in window, all symbols rejected."""
-        config = StrategyConfig(
-            ticker_universe=["AAPL"],
+        config = EquityScreenerConfig(
             trade_during_fomc=False,
             max_dte=365,  # ensure FOMC in window
         )
@@ -255,8 +223,7 @@ class TestCheckEvents:
         assert any("FOMC" in r for r in rejections["AAPL"])
 
     def test_clear_when_fomc_allowed(self):
-        config = StrategyConfig(
-            ticker_universe=["AAPL"],
+        config = EquityScreenerConfig(
             trade_during_fomc=True,
             trade_during_earnings=True,
             trade_during_dividends=True,

@@ -2,7 +2,6 @@
 
 from typing import Dict, Optional
 
-from csp.config import StrategyConfig
 from csp.trading.models import ExitReason, RiskCheckResult
 
 
@@ -10,6 +9,9 @@ class RiskManager:
     """
     Manages risk checks for positions.
     Implements stop-loss and early exit logic.
+
+    Accepts any config with the required risk attributes (duck typed):
+    StrategyConfig, RiskConfig, or any compatible object.
 
     Stop-Loss Conditions (ANY triggers exit):
     1. Current delta >= 2x entry delta
@@ -20,7 +22,7 @@ class RiskManager:
     - Premium captured >= expected decay + buffer
     """
 
-    def __init__(self, config: StrategyConfig):
+    def __init__(self, config):
         self.config = config
 
     def check_delta_stop(

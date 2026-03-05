@@ -1,0 +1,29 @@
+{
+  "name": "csp_bullish",
+  "universe_source": "screened_universe.json",
+  "sma_periods": [
+    8,
+    20,
+    50
+  ],
+  "rsi_period": 14,
+  "rsi_lower": 30,
+  "rsi_upper": 70,
+  "bb_period": 20,
+  "bb_std": 1.0,
+  "sma_bb_period": 20,
+  "sma_trend_lookback": 3,
+  "history_days": 60,
+  "enable_sma8_check": true,
+  "enable_sma20_check": true,
+  "enable_sma50_check": true,
+  "enable_bb_upper_check": true,
+  "enable_band_check": false,
+  "enable_sma50_trend_check": true,
+  "enable_rsi_check": true,
+  "share_price_max": null,
+  "trade_during_earnings": false,
+  "trade_during_dividends": false,
+  "trade_during_fomc": false,
+  "max_dte": 10
+}

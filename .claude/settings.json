@@ -1,7 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:www.federalreserve.gov)"
+      "WebFetch(domain:www.federalreserve.gov)",
+      "WebFetch(domain:databento.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:gist.github.com)",
+      "Bash(uv pip install databento tqdm)",
+      "Bash(uv pip install seaborn)"
+    ],
+    "additionalDirectories": [
+      "/Users/samuelminer/Projects/nissan_options/wheel_strategy/tqqq/cache"
     ]
   }
 }

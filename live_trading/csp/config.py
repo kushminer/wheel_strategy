@@ -49,15 +49,8 @@ class StrategyConfig:
         (21, float('inf')): 1.0,
     })
 
-    # ==================== EQUITY FILTER PARAMS ====================
-    sma_periods: List[int] = field(default_factory=lambda: [8, 20, 50]) # Simple Moving Average (SMA) periods
-    rsi_period: int = 14 # Relative Strength Index (RSI) period
-    rsi_lower: int = 30 # Relative Strength Index (RSI) lower bound
-    rsi_upper: int = 70 # Relative Strength Index (RSI) upper bound
-    bb_period: int = 20 # Bollinger Bands (BB) period
-    bb_std: float = 1.0 # Bollinger Bands (BB) standard deviation
-    sma_bb_period: int = 20 # Simple Moving Average (SMA) period for Bollinger Bands (BB)
-    sma_trend_lookback: int = 3 # Days to confirm SMA(50) uptrend
+    # ==================== DATA / DISPLAY ====================
+    bb_period: int = 20 # Bollinger Bands period (used for display labels)
     history_days: int = 60 # Days of price history to fetch
     max_position_pct: float = 0.10 # Max % of portfolio per ticker for position sizing & qty calc
 
@@ -121,35 +114,42 @@ class StrategyConfig:
     gcs_bucket_name: Optional[str] = None       # Required when storage_backend="gcs"
     gcs_prefix: str = ""                        # e.g. "prod" or "paper" (for GCS storage)  (not used yet)
 
-    # ==================== FILTER TOGGLES ====================
-    enable_sma8_check: bool = True # Simple Moving Average (SMA) check
-    enable_sma20_check: bool = True # Simple Moving Average (SMA) check
-    enable_sma50_check: bool = True # Simple Moving Average (SMA) check
-    enable_bb_upper_check: bool = False # Bollinger Bands (BB) check
-    enable_band_check: bool = True # Band check
-    enable_sma50_trend_check: bool = True
-    enable_rsi_check: bool = True # Relative Strength Index (RSI) check
+    # ==================== OPTIONS FILTER TOGGLES ====================
     enable_position_size_check: bool = True # Position size check
     enable_premium_check: bool = True # Premium check
     enable_delta_check: bool = True # Delta check
     enable_dte_check: bool = True # Days to Expiry (DTE) check
     enable_volume_check: bool = True
     enable_open_interest_check: bool = True # Open Interest check
-    enable_spread_check: bool = True # Spread check 
-    trade_during_earnings: bool = False # Trade during earnings
-    trade_during_dividends: bool = False # Trade during dividends
-    trade_during_fomc: bool = False # Trade during FOMC
+    enable_spread_check: bool = True # Spread check
+
+    # ==================== RISK TOGGLES ====================
     enable_delta_stop: bool = False # Delta stop
     enable_delta_absolute_stop: bool = True # Delta absolute stop
     enable_stock_drop_stop: bool = False # Stock drop stop
     enable_vix_spike_stop: bool = True # VIX spike stop
     enable_early_exit: bool = True # Early exit
 
+    # ==================== EQUITY SCREENER ====================
+    equity_screener: Optional[str] = None  # Named screener config, e.g. "csp_bullish"
+
     # ==================== COVERED CALL ====================
     covered_call_config: Optional[CoveredCallConfig] = None
 
     # ==================== OUTPUT ====================
     print_mode: str = "summary"  # "summary" or "verbose"
+
+    @property
+    def execution_config(self):
+        """Build a focused ExecutionConfig from this strategy config."""
+        from csp.trading.execution_config import ExecutionConfig
+        return ExecutionConfig.from_strategy_config(self)
+
+    @property
+    def risk_config(self):
+        """Build a focused RiskConfig from this strategy config."""
+        from csp.trading.execution_config import RiskConfig
+        return RiskConfig.from_strategy_config(self)
 
     def get_deployment_multiplier(self, vix: float) -> float:
         """Get cash deployment multiplier based on current VIX."""

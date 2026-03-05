@@ -1,6 +1,5 @@
 """Covered Call Manager — orchestrates the CC lifecycle for stock positions."""
 
-import asyncio
 import re
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
@@ -14,13 +13,9 @@ from csp.data.manager import DataManager
 from csp.data.options import OptionContract
 from csp.trading.execution import ExecutionEngine
 from csp.trading.metadata import StrategyMetadataStore
-from csp.trading.models import ExitReason, OrderResult, RiskCheckResult
+from csp.trading.models import ExitReason, OrderResult, PositionProxy, RiskCheckResult
 from csp.trading.risk import RiskManager
-
-
-async def _arun(fn, *args, **kwargs):
-    """Run a sync function in a thread pool (non-blocking)."""
-    return await asyncio.to_thread(fn, *args, **kwargs)
+from csp.trading.utils import _arun, is_option_symbol, update_candidate_from_snapshot, build_execution_components
 
 
 class CoveredCallManager:
@@ -51,6 +46,16 @@ class CoveredCallManager:
         self.metadata = metadata_store
         self.alpaca_manager = alpaca_manager
         self.eastern = pytz.timezone("US/Eastern")
+
+        snapshot_fetcher = lambda symbols: _arun(
+            self.data_manager.options_fetcher.get_option_snapshots, symbols
+        )
+        self.stepped_executor, self.exit_router = build_execution_components(
+            execution=self.execution,
+            config=strategy_config,
+            snapshot_fetcher=snapshot_fetcher,
+            vprint=self._vprint,
+        )
 
     def _vprint(self, msg: str):
         if self.config.print_mode == "verbose":
@@ -125,7 +130,7 @@ class CoveredCallManager:
             side = pos.side.value if hasattr(pos.side, "value") else str(pos.side)
 
             # Skip options (OCC format: long symbols with digits)
-            if any(c.isdigit() for c in symbol) and len(symbol) > 10:
+            if is_option_symbol(symbol):
                 continue
 
             # Only long stock positions
@@ -294,105 +299,47 @@ class CoveredCallManager:
             print(f"  CC: Unknown strike mode: {mode}")
             return None
 
+    def _validate_cc_candidate(self, candidate: OptionContract) -> bool:
+        """Re-validate a CC candidate after snapshot refetch.
+
+        Checks that the candidate still meets CC selection criteria
+        based on the configured strike mode.
+        """
+        if candidate.bid <= 0:
+            return False
+
+        mode = self.cc_config.cc_strike_mode
+
+        if mode in ("delta", "min_delta"):
+            if candidate.delta is None:
+                return False
+            if mode == "min_delta" and abs(candidate.delta) < self.cc_config.cc_strike_delta:
+                return False
+
+        elif mode == "min_daily_return":
+            if candidate.daily_return_on_collateral < self.cc_config.cc_min_daily_return_pct:
+                return False
+
+        return True
+
     async def _execute_cc_entry(
         self, candidate: OptionContract, qty: int
     ) -> Optional[Tuple[OrderResult, float]]:
         """Execute a stepped limit sell-to-open for a covered call.
 
-        Uses the same stepped order logic as CSP entries: start at mid,
-        step down toward bid.
+        Delegates to SteppedOrderExecutor with CC-specific callbacks
+        for greek updates and re-validation between steps.
         """
-        cfg = self.config
-        symbol = candidate.symbol
+        def update_fn(snap):
+            update_candidate_from_snapshot(candidate, snap)
 
-        bid = candidate.bid
-        ask = candidate.ask
-        mid = candidate.mid
-        spread = ask - bid
+        def validate_fn(snap):
+            return self._validate_cc_candidate(candidate)
 
-        if cfg.entry_start_price == "mid":
-            limit_price = mid
-        else:
-            limit_price = bid
-
-        floor_from_steps = mid - (cfg.entry_max_steps * cfg.entry_step_pct * spread)
-        price_floor = max(bid, floor_from_steps)
-        limit_price = round(max(limit_price, price_floor), 2)
-
-        self._vprint(f"    CC stepped entry: start=${limit_price:.2f}, "
-                     f"bid=${bid:.2f}, ask=${ask:.2f}, spread=${spread:.2f}")
-
-        for step in range(cfg.entry_max_steps + 1):
-            now_et = datetime.now(self.eastern).strftime("%H:%M:%S")
-            self._vprint(f"    Step {step}/{cfg.entry_max_steps} [{now_et}]: "
-                         f"limit=${limit_price:.2f} | bid=${bid:.2f} ask=${ask:.2f}")
-
-            result = await _arun(
-                self.execution.sell_to_open,
-                option_symbol=symbol,
-                quantity=qty,
-                limit_price=limit_price,
-            )
-
-            if not result.success:
-                self._vprint(f"    Step {step}: order failed — {result.message}")
-                return None
-
-            order_id = result.order_id
-            await asyncio.sleep(cfg.entry_step_interval)
-
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status["status"] in ("filled", "partially_filled"):
-                filled_price = (
-                    float(status["filled_avg_price"])
-                    if status.get("filled_avg_price")
-                    else limit_price
-                )
-                return (result, filled_price)
-
-            # Not filled — cancel
-            await _arun(self.execution.cancel_order, order_id)
-            await asyncio.sleep(1)
-
-            # Re-check fill during cancel
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status["status"] in ("filled", "partially_filled"):
-                filled_price = (
-                    float(status["filled_avg_price"])
-                    if status.get("filled_avg_price")
-                    else limit_price
-                )
-                return (result, filled_price)
-
-            if step >= cfg.entry_max_steps:
-                return None
-
-            # Optionally re-fetch snapshot
-            if cfg.entry_refetch_snapshot:
-                snapshots = await _arun(
-                    self.data_manager.options_fetcher.get_option_snapshots, [symbol]
-                )
-                if symbol not in snapshots:
-                    return None
-                snap = snapshots[symbol]
-                new_bid = float(snap.get("bid", 0) or 0)
-                new_ask = float(snap.get("ask", 0) or 0)
-                if new_bid <= 0:
-                    return None
-                bid, ask = new_bid, new_ask
-                mid = (bid + ask) / 2
-                spread = ask - bid
-                price_floor = max(bid, mid - (cfg.entry_max_steps * cfg.entry_step_pct * spread))
-                self._vprint(f"    Refreshed: bid=${bid:.2f} ask=${ask:.2f} mid=${mid:.2f}")
-
-            next_step = step + 1
-            if cfg.entry_start_price == "mid":
-                limit_price = mid - (next_step * cfg.entry_step_pct * spread)
-            else:
-                limit_price = bid - (next_step * cfg.entry_step_pct * spread)
-            limit_price = round(max(limit_price, price_floor), 2)
-
-        return None
+        return await self.stepped_executor.execute_entry(
+            candidate.symbol, qty, candidate.bid, candidate.ask, candidate.mid,
+            validate_fn=validate_fn, update_fn=update_fn,
+        )
 
     # ── CC monitoring ─────────────────────────────────────────────
 
@@ -442,7 +389,7 @@ class CoveredCallManager:
                 print(f"  CC ASSIGNED: {underlying} — shares called away")
                 self.store.record_cc_exit(
                     underlying=underlying,
-                    exit_reason="cc_assigned",
+                    exit_reason=ExitReason.ASSIGNED.value,
                     exit_premium=0.0,
                 )
                 self.store.terminate(underlying, reason="shares_called_away")
@@ -452,7 +399,7 @@ class CoveredCallManager:
                 print(f"  CC EXPIRED: {underlying} — still hold {shares_held} shares")
                 self.store.record_cc_exit(
                     underlying=underlying,
-                    exit_reason="expired",
+                    exit_reason=ExitReason.EXPIRY.value,
                     exit_premium=0.0,
                 )
                 return "exited"
@@ -472,7 +419,7 @@ class CoveredCallManager:
 
         if current_delta is None and self.config.exit_on_missing_delta:
             print(f"  CC: Delta unavailable for {option_symbol}, triggering exit")
-            await self._exit_covered_call(underlying, pos, option_symbol, "data_unavailable")
+            await self._exit_covered_call(underlying, pos, option_symbol, ExitReason.DATA_UNAVAILABLE)
             return "exited"
 
         if current_delta is None:
@@ -480,20 +427,10 @@ class CoveredCallManager:
             return None
 
         # Build a position proxy for the RiskManager
-        from types import SimpleNamespace
-
-        entry_premium = cc.get("entry_premium", 0)
-        proxy = SimpleNamespace(
-            entry_delta=current_delta * 0.5,  # approximate entry delta
-            entry_stock_price=pos.get("cost_basis", 0),
-            entry_premium=entry_premium,
-            entry_vix=current_vix,
-            entry_daily_return=0,
-            strike=cc.get("strike", 0),
-            days_held=max((datetime.now() - datetime.fromisoformat(cc["entry_date"])).days, 0)
-            if cc.get("entry_date")
-            else 0,
-        )
+        proxy = PositionProxy.from_cc_store(underlying, cc, pos)
+        # Override entry_delta with approximate from current (CC doesn't track entry delta)
+        proxy.entry_delta = current_delta * 0.5
+        proxy.entry_vix = current_vix
 
         try:
             stock_price = await _arun(
@@ -510,7 +447,7 @@ class CoveredCallManager:
         if stop_result.should_exit:
             print(f"  CC RISK EXIT ({underlying}): {stop_result.details}")
             await self._exit_covered_call(
-                underlying, pos, option_symbol, stop_result.exit_reason.value
+                underlying, pos, option_symbol, stop_result.exit_reason
             )
             return "exited"
 
@@ -520,7 +457,7 @@ class CoveredCallManager:
             if early_result.should_exit:
                 print(f"  CC EARLY EXIT ({underlying}): {early_result.details}")
                 await self._exit_covered_call(
-                    underlying, pos, option_symbol, "early_exit"
+                    underlying, pos, option_symbol, ExitReason.EARLY_EXIT
                 )
                 return "exited"
 
@@ -535,134 +472,28 @@ class CoveredCallManager:
         underlying: str,
         pos: dict,
         option_symbol: str,
-        exit_reason: str,
+        exit_reason: ExitReason,
     ):
-        """Buy-to-close a covered call using stepped limit order."""
+        """Buy-to-close a covered call. Delegates to ExitRouter."""
         cc = pos.get("current_cc", {})
         qty = cc.get("quantity", 1)
 
-        # Try stepped exit (buy-to-close)
-        result = await self._execute_cc_exit(option_symbol, qty)
-
-        if result is not None:
-            _, filled_price = result
-            print(f"    CC exit filled @ ${filled_price:.2f}")
+        def record_fn(order_id, filled_price):
             self.store.record_cc_exit(
                 underlying=underlying,
-                exit_reason=exit_reason,
+                exit_reason=exit_reason.value,
                 exit_premium=filled_price,
             )
-        else:
-            # Fallback to market order
-            print(f"    CC stepped exit failed, using market order")
-            market_result = await _arun(
-                self.execution.buy_to_close,
-                option_symbol=option_symbol,
-                quantity=qty,
-            )
-            if market_result.success:
-                self.store.record_cc_exit(
-                    underlying=underlying,
-                    exit_reason=exit_reason,
-                    exit_premium=0.0,
-                )
-            else:
-                print(f"    CC market exit also failed: {market_result.message}")
 
-    async def _execute_cc_exit(
-        self, option_symbol: str, qty: int
-    ) -> Optional[Tuple[OrderResult, float]]:
-        """Execute a stepped limit buy-to-close for a covered call.
-
-        Steps UP from mid toward ask (same logic as CSP exits).
-        """
-        cfg = self.config
-
-        snapshots = await _arun(
-            self.data_manager.options_fetcher.get_option_snapshots, [option_symbol]
+        success = await self.exit_router.execute_exit(
+            option_symbol=option_symbol,
+            quantity=qty,
+            exit_reason=exit_reason,
+            record_fn=record_fn,
         )
-        if option_symbol not in snapshots:
-            return None
 
-        snap = snapshots[option_symbol]
-        bid = float(snap.get("bid", 0) or 0)
-        ask = float(snap.get("ask", 0) or 0)
-        if ask <= 0:
-            return None
-
-        mid = (bid + ask) / 2
-        spread = ask - bid
-
-        if cfg.exit_start_price == "ask":
-            limit_price = ask
-        else:
-            limit_price = mid
-
-        ceiling = min(ask, mid + (cfg.exit_max_steps * cfg.exit_step_pct * spread))
-        limit_price = round(min(limit_price, ceiling), 2)
-
-        for step in range(cfg.exit_max_steps + 1):
-            result = await _arun(
-                self.execution.buy_to_close,
-                option_symbol=option_symbol,
-                quantity=qty,
-                limit_price=limit_price,
-            )
-
-            if not result.success:
-                return None
-
-            order_id = result.order_id
-            await asyncio.sleep(cfg.exit_step_interval)
-
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status["status"] in ("filled", "partially_filled"):
-                filled_price = (
-                    float(status["filled_avg_price"])
-                    if status.get("filled_avg_price")
-                    else limit_price
-                )
-                return (result, filled_price)
-
-            await _arun(self.execution.cancel_order, order_id)
-            await asyncio.sleep(1)
-
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status["status"] in ("filled", "partially_filled"):
-                filled_price = (
-                    float(status["filled_avg_price"])
-                    if status.get("filled_avg_price")
-                    else limit_price
-                )
-                return (result, filled_price)
-
-            if step >= cfg.exit_max_steps:
-                return None
-
-            if cfg.exit_refetch_snapshot:
-                snapshots = await _arun(
-                    self.data_manager.options_fetcher.get_option_snapshots,
-                    [option_symbol],
-                )
-                if option_symbol not in snapshots:
-                    return None
-                snap = snapshots[option_symbol]
-                bid = float(snap.get("bid", 0) or 0)
-                ask = float(snap.get("ask", 0) or 0)
-                if ask <= 0:
-                    return None
-                mid = (bid + ask) / 2
-                spread = ask - bid
-                ceiling = min(ask, mid + (cfg.exit_max_steps * cfg.exit_step_pct * spread))
-
-            next_step = step + 1
-            if cfg.exit_start_price == "ask":
-                limit_price = ask
-            else:
-                limit_price = mid + (next_step * cfg.exit_step_pct * spread)
-            limit_price = round(min(limit_price, ceiling), 2)
-
-        return None
+        if not success:
+            print(f"    CC exit failed for {option_symbol}")
 
     # ── Diagnostics ─────────────────────────────────────────────
 

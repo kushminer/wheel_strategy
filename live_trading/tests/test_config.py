@@ -58,8 +58,8 @@ class TestDeployableCash:
 
 class TestDefaults:
     def test_default_filter_toggles(self, config):
-        assert config.enable_sma8_check is True
-        assert config.enable_bb_upper_check is False
+        assert config.enable_delta_check is True
+        assert config.enable_premium_check is True
         assert config.enable_delta_stop is False
         assert config.enable_delta_absolute_stop is True
 

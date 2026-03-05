@@ -1,9 +1,11 @@
 """Main trading loop that orchestrates the CSP strategy."""
 
 import asyncio
+import json
 import re
 from datetime import date, datetime, time as dt_time
 from itertools import groupby
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
@@ -18,14 +20,11 @@ from csp.signals.scanner import StrategyScanner
 from csp.storage import build_storage_backend
 from csp.trading.daily_log import DailyLog
 from csp.trading.execution import ExecutionEngine
+from csp.trading.market_session import MarketSession
 from csp.trading.metadata import StrategyMetadataStore
-from csp.trading.models import ExitReason, OrderResult, RiskCheckResult
+from csp.trading.models import ExitReason, OrderResult, PositionProxy, RiskCheckResult
 from csp.trading.risk import RiskManager
-
-
-async def _arun(fn, *args, **kwargs):
-    """Run a sync function in a thread pool (non-blocking)."""
-    return await asyncio.to_thread(fn, *args, **kwargs)
+from csp.trading.utils import _arun, is_option_symbol, update_candidate_from_snapshot, build_execution_components
 
 
 class TradingLoop:
@@ -84,6 +83,25 @@ class TradingLoop:
         self._last_equity_passed = 0
         self._last_options_evaluated = 0
 
+        # Shared stepped order executor + exit router
+        snapshot_fetcher = lambda symbols: _arun(
+            self.data_manager.options_fetcher.get_option_snapshots, symbols
+        )
+        self.stepped_executor, self.exit_router = build_execution_components(
+            execution=self.execution,
+            config=config,
+            snapshot_fetcher=snapshot_fetcher,
+            vprint=self._vprint,
+        )
+
+        # Market session utilities
+        self.market_session = MarketSession(
+            alpaca_manager=self.alpaca_manager,
+            vix_fetcher=self.vix_fetcher,
+            vix_spike_multiplier=config.vix_spike_multiplier,
+            vprint=self._vprint,
+        )
+
     def _vprint(self, msg: str):
         """Print only in verbose mode."""
         if self.config.print_mode == "verbose":
@@ -120,35 +138,8 @@ class TradingLoop:
         return len(await self._get_option_positions())
 
     def _build_position_proxy(self, alpaca_pos, meta: dict):
-        """Build lightweight object with position-like attributes
-        so RiskManager works without changes."""
-        strike = AlpacaClientManager.parse_strike_from_symbol(alpaca_pos.symbol)
-        expiration = AlpacaClientManager.parse_expiration_from_symbol(alpaca_pos.symbol)
-        entry_date_str = meta.get('entry_date', datetime.now().isoformat())
-
-        proxy = SimpleNamespace(
-            symbol=meta.get('underlying', ''),
-            option_symbol=alpaca_pos.symbol,
-            quantity=int(float(alpaca_pos.qty)),
-            strike=strike,
-            expiration=expiration or date.today(),
-            position_id=alpaca_pos.symbol,
-            entry_delta=meta.get('entry_delta', 0),
-            entry_iv=meta.get('entry_iv', 0),
-            entry_vix=meta.get('entry_vix', 0),
-            entry_stock_price=meta.get('entry_stock_price', 0),
-            entry_premium=meta.get('entry_premium', 0),
-            entry_daily_return=meta.get('entry_daily_return', 0),
-            dte_at_entry=meta.get('dte_at_entry', 0),
-            entry_order_id=meta.get('entry_order_id', ''),
-        )
-        proxy.current_dte = (proxy.expiration - date.today()).days
-        proxy.days_held = (date.today() - datetime.fromisoformat(entry_date_str).date()).days
-        proxy.collateral_required = abs(proxy.quantity) * proxy.strike * 100
-        def calculate_pnl(exit_premium, _p=proxy):
-            return (_p.entry_premium - exit_premium) * abs(_p.quantity) * 100
-        proxy.calculate_pnl = calculate_pnl
-        return proxy
+        """Build a PositionProxy from Alpaca position + metadata."""
+        return PositionProxy.from_alpaca_and_metadata(alpaca_pos, meta)
 
     async def _get_portfolio_summary(self) -> dict:
         """Build portfolio summary from Alpaca + metadata."""
@@ -161,76 +152,16 @@ class TradingLoop:
         }
 
     async def is_market_open(self) -> bool:
-        """Check if US market is currently open using Alpaca calendar API.
-        Caches the trading-day check per calendar date so only one API call per day.
-        """
-        now = datetime.now(self.eastern)
-        today = now.date()
+        """Check if US market is currently open. Delegates to MarketSession."""
+        return await self.market_session.is_market_open()
 
-        # Weekday check (Mon=0, Fri=4) — fast reject weekends
-        if now.weekday() > 4:
-            return False
-
-        # Check if today is a trading day (holiday check, cached per day)
-        if not hasattr(self, '_trading_day_cache') or self._trading_day_cache.get('date') != today:
-            try:
-                from alpaca.trading.requests import GetCalendarRequest
-                cal_req = GetCalendarRequest(start=today, end=today)
-                cal = await _arun(self.alpaca_manager.trading_client.get_calendar, cal_req)
-                # cal[0].date is a date object; cal[0].open/close are datetime objects
-                is_trading_day = len(cal) > 0 and cal[0].date == today
-                self._trading_day_cache = {
-                    'date': today,
-                    'is_trading_day': is_trading_day,
-                    'open': cal[0].open.time() if is_trading_day else None,
-                    'close': cal[0].close.time() if is_trading_day else None,
-                }
-                if not is_trading_day:
-                    print(f"  Market closed today ({today} is not a trading day)")
-            except Exception as e:
-                self._vprint(f"  Warning: Alpaca calendar check failed ({e}), falling back to time-only check")
-                self._trading_day_cache = {'date': today, 'is_trading_day': True, 'open': None, 'close': None}
-
-        if not self._trading_day_cache['is_trading_day']:
-            return False
-
-        # Time check — use Alpaca hours if available, else default 9:30-16:00 ET
-        market_open = self._trading_day_cache.get('open') or dt_time(9, 30)
-        market_close = self._trading_day_cache.get('close') or dt_time(16, 0)
-
-        return market_open <= now.time() <= market_close
-    
     async def get_session_vix_reference(self) -> float:
-        """
-        Get VIX reference for current session.
-        Uses session open VIX, cached for the day.
-        """
-        session_date = datetime.now(self.eastern).date()
-
-        if self._session_vix_open is None:
-            # Get last session's open
-            _, vix_open = await _arun(self.vix_fetcher.get_session_reference_vix)
-            self._session_vix_open = (session_date, vix_open)
-
-        # Reset if new day
-        if self._session_vix_open[0] != session_date:
-            _, vix_open = await _arun(self.vix_fetcher.get_session_reference_vix)
-            self._session_vix_open = (session_date, vix_open)
-
-        return self._session_vix_open[1]
+        """Get VIX reference for current session. Delegates to MarketSession."""
+        return await self.market_session.get_session_vix_reference()
 
     async def check_global_vix_stop(self, current_vix: float) -> bool:
-        """
-        Check if global VIX stop is triggered.
-        If VIX >= 1.15x session open, close ALL positions.
-
-        Returns:
-            True if global stop triggered
-        """
-        reference_vix = await self.get_session_vix_reference()
-        threshold = reference_vix * self.config.vix_spike_multiplier
-
-        return current_vix >= threshold
+        """Check if global VIX stop is triggered. Delegates to MarketSession."""
+        return await self.market_session.check_global_vix_stop(current_vix)
     
     async def monitor_positions(self, current_vix: float) -> List[Tuple]:
         """
@@ -374,106 +305,79 @@ class TradingLoop:
         risk_result: RiskCheckResult,
         current_premium: float = 0.0,
     ) -> bool:
-        """
-        Execute exit for a position. Routes to appropriate order type based on exit reason.
+        """Execute exit for a position. Delegates to ExitRouter for order execution.
 
-        Args:
-            position: The position to close
-            risk_result: Risk check result with exit reason and details
-            current_premium: Current option premium (ask price), passed directly
-                             from monitor_positions for reliable P&L tracking
-
-        Returns:
-            True if exit completed successfully
+        Assignment exits are handled inline (no order needed).
+        All other exits (early, expiry, stop-loss) are routed via ExitRouter.
         """
         print(f"  Exiting {position.symbol}: {risk_result.exit_reason.value}")
         print(f"    {risk_result.details}")
 
-        exit_premium = current_premium
-
-        # === Assignment: no order needed ===
+        # Assignment: no order needed — just record
         if risk_result.exit_reason == ExitReason.ASSIGNED:
-            exit_premium = 0.0
-            print(f"    Assignment detected -- no order needed")
-
             self.metadata.record_exit(
                 option_symbol=position.option_symbol,
                 exit_reason=risk_result.exit_reason.value,
                 exit_details=risk_result.details,
                 exit_order_id="assignment",
             )
-            pnl = position.calculate_pnl(exit_premium)
-            print(f"    Position closed (assigned). Option P&L: ${pnl:.2f}")
+            pnl = position.calculate_pnl(0.0)
+            print(f"    Assignment detected — no order needed. P&L: ${pnl:.2f}")
             return True
 
-        # === Early exit & Expiry: use stepped limit ===
-        if risk_result.exit_reason in (ExitReason.EARLY_EXIT, ExitReason.EXPIRY):
-            result_tuple = await self._execute_stepped_exit(position)
-
-            if result_tuple is not None:
-                result, filled_price = result_tuple
-                exit_premium = filled_price
-
-                self.metadata.record_exit(
-                    option_symbol=position.option_symbol,
-                    exit_reason=risk_result.exit_reason.value,
-                    exit_details=risk_result.details,
-                    exit_order_id=result.order_id,
-                )
-                pnl = position.calculate_pnl(exit_premium)
-                print(f"    Stepped exit filled @ ${exit_premium:.2f}. P&L: ${pnl:.2f}")
-                return True
-            else:
-                # Stepped exit exhausted -- fall back to market order
-                print(f"    Stepped exit exhausted, falling back to market order")
-                result = await _arun(
-                    self.execution.buy_to_close,
-                    option_symbol=position.option_symbol,
-                    quantity=abs(position.quantity),
-                    limit_price=None,
-                )
-                if result.success:
-                    self.metadata.record_exit(
-                        option_symbol=position.option_symbol,
-                        exit_reason=risk_result.exit_reason.value,
-                        exit_details=risk_result.details,
-                        exit_order_id=result.order_id,
-                    )
-                    pnl = position.calculate_pnl(exit_premium)
-                    print(f"    Market fallback submitted. Est. P&L: ${pnl:.2f}")
-                    return True
-                else:
-                    print(f"    Market fallback also failed: {result.message}")
-                    return False
-
-        # === Stop-loss exits: always market order (immediate) ===
-        print(f"    Stop-loss: market order")
-        result = await _arun(
-            self.execution.buy_to_close,
-            option_symbol=position.option_symbol,
-            quantity=abs(position.quantity),
-            limit_price=None,
-        )
-
-        if result and result.success:
+        # All other exits: delegate to exit router
+        def record_fn(order_id, filled_price):
             self.metadata.record_exit(
                 option_symbol=position.option_symbol,
                 exit_reason=risk_result.exit_reason.value,
                 exit_details=risk_result.details,
-                exit_order_id=result.order_id,
+                exit_order_id=order_id,
             )
-            pnl = position.calculate_pnl(exit_premium)
-            print(f"    Exit order submitted. Est. P&L: ${pnl:.2f}")
-            return True
-        else:
-            msg = result.message if result else "No order result"
-            print(f"    Exit order failed: {msg}")
-            return False
 
+        success = await self.exit_router.execute_exit(
+            option_symbol=position.option_symbol,
+            quantity=abs(position.quantity),
+            exit_reason=risk_result.exit_reason,
+            record_fn=record_fn,
+        )
+
+        if success:
+            pnl = position.calculate_pnl(current_premium)
+            print(f"    Exit completed. P&L: ${pnl:.2f}")
+        else:
+            print(f"    Exit order failed for {position.option_symbol}")
+
+        return success
+
+
+    def _load_screener_output(self) -> Optional[dict]:
+        """Try to load equity screener output JSON. Returns None if stale or missing."""
+        config_name = self.config.equity_screener
+        if not config_name:
+            return None
+
+        path = Path(f"equity_screened_{config_name}.json")
+        if not path.exists():
+            return None
+
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+
+        # Check staleness: screened_at should be today
+        screened_at = data.get("screened_at", "")
+        today_str = datetime.now(self.eastern).strftime("%Y-%m-%d")
+        if today_str not in screened_at:
+            self._vprint(f"  Screener output is stale ({screened_at}), running inline scan...")
+            return None
+
+        return data
 
     async def _refresh_equity_scan(self) -> List[str]:
         """
-        Run equity scan once per day. Cache passing symbols and full results.
+        Run equity scan once per day. Try screener JSON first, fall back to inline.
         Returns list of equity-passing symbols.
         """
         today = datetime.now(self.eastern).date()
@@ -481,21 +385,34 @@ class TradingLoop:
         if self._equity_scan_date == today and self._equity_passing is not None:
             return self._equity_passing
 
+        # Try loading pre-computed screener output
+        screener_data = self._load_screener_output()
+        if screener_data is not None:
+            passing_symbols = [r["symbol"] for r in screener_data.get("pass", [])]
+            self._equity_passing = passing_symbols
+            self._equity_scan_date = today
+            self._last_equity_passed = len(passing_symbols)
+            print(f"  Loaded equity screener output: {len(passing_symbols)} passing "
+                  f"(screener={screener_data.get('screener', '?')}, "
+                  f"from {screener_data.get('screened_at', 'unknown')})")
+            return self._equity_passing
+
+        # Fallback: run inline scan
         scan_start = datetime.now()
         print(f"  Initiating equity scan at {datetime.now(self.eastern).strftime('%H:%M:%S %Z')}...")
         scan_results = await _arun(self.scanner.scan_universe, skip_equity_filter=False)
         scan_elapsed = (datetime.now() - scan_start).total_seconds()
-        
+
         passing_equity = [r for r in scan_results if r.equity_result.passes]
         self._equity_passing = [r.symbol for r in passing_equity]
         self._equity_scan_date = today
         self._last_scan_results = scan_results  # Cache full results for diagnostics
         self._last_equity_passed = len(passing_equity)
-        
+
         print(f"  Symbols scanned:                         {len(scan_results)}")
         print(f"  Passed equity filter:                     {len(passing_equity)}")
         print(f"  Scan completed in {scan_elapsed:.1f}s")
-        
+
         # Print equity-passing table
         if passing_equity:
             bb_label = f"BB{self.config.bb_period}"
@@ -517,7 +434,7 @@ class TradingLoop:
                 )
         else:
             print("\n  \u26a0 No symbols passed the equity filter.")
-        
+
         # Log equity scan
         self.logger.log_equity_scan(
             [r.equity_result for r in scan_results],
@@ -630,141 +547,22 @@ class TradingLoop:
     ) -> Optional[Tuple['OrderResult', float]]:
         """Execute a stepped limit order entry for a CSP position.
 
-        Starts at mid (or bid) and steps down toward bid over multiple
-        attempts, optionally re-fetching the snapshot and re-validating
-        the contract between steps.
-
-        Returns:
-            Tuple of (OrderResult, filled_price) if filled, or None if exhausted.
+        Delegates to SteppedOrderExecutor with CSP-specific callbacks
+        for greek updates and filter re-validation between steps.
         """
-        cfg = self.config
-        symbol = candidate.symbol
+        def update_fn(snap):
+            update_candidate_from_snapshot(candidate, snap)
 
-        bid = candidate.bid
-        ask = candidate.ask
-        mid = candidate.mid
-        spread = ask - bid
+        def validate_fn(snap):
+            result = self.scanner.options_filter.evaluate(candidate)
+            return result.passes
 
-        # Initial limit price
-        if cfg.entry_start_price == "mid":
-            limit_price = mid
-        else:
-            limit_price = bid
-
-        # Floor: never go below bid; also respect the max-step computed floor
-        floor_from_steps = mid - (cfg.entry_max_steps * cfg.entry_step_pct * spread)
-        price_floor = max(bid, floor_from_steps)
-        limit_price = round(max(limit_price, price_floor), 2)
-
-        self._vprint(f"    Stepped entry: start=${limit_price:.2f}, "
-              f"bid=${bid:.2f}, ask=${ask:.2f}, mid=${mid:.2f}, "
-              f"spread=${spread:.2f}, floor=${price_floor:.2f}")
-
-        self._last_step_log = []
-
-        for step in range(cfg.entry_max_steps + 1):
-            self._vprint(f"    Step {step}/{cfg.entry_max_steps}: limit @ ${limit_price:.2f}")
-
-            result = await _arun(
-                self.execution.sell_to_open,
-                option_symbol=symbol,
-                quantity=qty,
-                limit_price=limit_price,
-            )
-
-            if not result.success:
-                self._vprint(f"    Step {step}: order submission failed — {result.message}")
-                return None
-
-            order_id = result.order_id
-
-            self._vprint(f"    Step {step}: waiting {cfg.entry_step_interval}s for fill...")
-            await asyncio.sleep(cfg.entry_step_interval)
-
-            status = await _arun(self.execution.get_order_status, order_id)
-            self._last_step_log.append({
-                "step": step, "limit_price": limit_price,
-                "status": status['status'] if status else 'unknown',
-                "duration_s": cfg.entry_step_interval,
-                "bid": bid, "ask": ask, "mid": round(mid, 2), "spread": round(spread, 2),
-            })
-
-            if status and status['status'] in ('filled', 'partially_filled'):
-                filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
-                tag = "FILLED" if status['status'] == 'filled' else f"PARTIAL ({status['filled_qty']}/{qty})"
-                self._vprint(f"    Step {step}: {tag} @ ${filled_price:.2f}")
-                return (result, filled_price)
-
-            # Not filled — cancel
-            self._vprint(f"    Step {step}: not filled (status={status['status'] if status else 'unknown'}), cancelling...")
-            await _arun(self.execution.cancel_order, order_id)
-            await asyncio.sleep(1)  # brief pause for cancel to propagate
-
-            # Re-check in case fill happened during cancel
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status['status'] in ('filled', 'partially_filled'):
-                filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
-                self._vprint(f"    Step {step}: filled during cancel @ ${filled_price:.2f}")
-                return (result, filled_price)
-
-            # Last step — give up
-            if step >= cfg.entry_max_steps:
-                self._vprint(f"    All {cfg.entry_max_steps} steps exhausted. Giving up on {candidate.underlying}.")
-                return None
-
-            # Optionally re-fetch snapshot
-            if cfg.entry_refetch_snapshot:
-                snapshots = await _arun(self.data_manager.options_fetcher.get_option_snapshots, [symbol])
-                if symbol not in snapshots:
-                    self._vprint(f"    Snapshot unavailable after re-fetch. Aborting.")
-                    return None
-
-                snap = snapshots[symbol]
-                new_bid = float(snap.get('bid', 0) or 0)
-                new_ask = float(snap.get('ask', 0) or 0)
-
-                if new_bid <= 0:
-                    self._vprint(f"    Bid is zero after re-fetch. Aborting.")
-                    return None
-
-                new_mid = (new_bid + new_ask) / 2
-                new_spread = new_ask - new_bid
-
-                # Update candidate for re-validation
-                candidate.bid = new_bid
-                candidate.ask = new_ask
-                candidate.mid = new_mid
-                if snap.get('delta') is not None:
-                    candidate.delta = snap['delta']
-                if snap.get('implied_volatility') is not None:
-                    candidate.implied_volatility = snap['implied_volatility']
-                if snap.get('volume') is not None:
-                    candidate.volume = snap['volume']
-                if snap.get('open_interest') is not None:
-                    candidate.open_interest = snap['open_interest']
-
-                # Re-validate against filters
-                filter_result = self.scanner.options_filter.evaluate(candidate)
-                if not filter_result.passes:
-                    self._vprint(f"    Contract no longer passes filters: {filter_result.failure_reasons}")
-                    return None
-
-                bid, ask, mid, spread = new_bid, new_ask, new_mid, new_spread
-                price_floor = max(bid, mid - (cfg.entry_max_steps * cfg.entry_step_pct * spread))
-
-                self._vprint(f"    Refreshed: bid=${bid:.2f}, ask=${ask:.2f}, "
-                      f"mid=${mid:.2f}, spread=${spread:.2f}, floor=${price_floor:.2f}")
-
-            # Compute next step price
-            next_step = step + 1
-            if cfg.entry_start_price == "mid":
-                limit_price = mid - (next_step * cfg.entry_step_pct * spread)
-            else:
-                limit_price = bid - (next_step * cfg.entry_step_pct * spread)
-
-            limit_price = round(max(limit_price, price_floor), 2)
-
-        return None
+        entry_result = await self.stepped_executor.execute_entry(
+            candidate.symbol, qty, candidate.bid, candidate.ask, candidate.mid,
+            validate_fn=validate_fn, update_fn=update_fn,
+        )
+        self._last_step_log = self.stepped_executor.last_step_log
+        return entry_result
 
     async def _execute_single_entry(
         self,
@@ -860,126 +658,11 @@ class TradingLoop:
     ) -> Optional[Tuple['OrderResult', float]]:
         """Execute a stepped limit order exit (buy-to-close) for a CSP position.
 
-        Starts at mid (or ask) and steps UP toward ask over multiple
-        attempts, optionally re-fetching the snapshot between steps.
-
-        Returns:
-            Tuple of (OrderResult, filled_price) if filled, or None if exhausted.
+        Delegates to SteppedOrderExecutor (auto-fetches snapshot).
         """
-        cfg = self.config
-        option_symbol = position.option_symbol
-        qty = abs(position.quantity)
-
-        # Fetch current snapshot
-        snapshots = await _arun(self.data_manager.options_fetcher.get_option_snapshots, [option_symbol])
-        if option_symbol not in snapshots:
-            self._vprint(f"    Stepped exit: no snapshot for {option_symbol}")
-            return None
-
-        snap = snapshots[option_symbol]
-        bid = float(snap.get('bid', 0) or 0)
-        ask = float(snap.get('ask', 0) or 0)
-
-        if ask <= 0:
-            self._vprint(f"    Stepped exit: ask is zero, aborting")
-            return None
-
-        mid = (bid + ask) / 2
-        spread = ask - bid
-
-        # Initial limit price
-        if cfg.exit_start_price == "ask":
-            limit_price = ask
-        else:
-            limit_price = mid
-
-        # Ceiling: never go above ask
-        ceiling_from_steps = mid + (cfg.exit_max_steps * cfg.exit_step_pct * spread)
-        price_ceiling = min(ask, ceiling_from_steps)
-        limit_price = round(min(limit_price, price_ceiling), 2)
-
-        self._vprint(f"    Stepped exit: start=${limit_price:.2f}, "
-              f"bid=${bid:.2f}, ask=${ask:.2f}, mid=${mid:.2f}, "
-              f"spread=${spread:.2f}, ceiling=${price_ceiling:.2f}")
-
-        for step in range(cfg.exit_max_steps + 1):
-            self._vprint(f"    Step {step}/{cfg.exit_max_steps}: limit @ ${limit_price:.2f}")
-
-            result = await _arun(
-                self.execution.buy_to_close,
-                option_symbol=option_symbol,
-                quantity=qty,
-                limit_price=limit_price,
-            )
-
-            if not result.success:
-                self._vprint(f"    Step {step}: order submission failed -- {result.message}")
-                return None
-
-            order_id = result.order_id
-
-            self._vprint(f"    Step {step}: waiting {cfg.exit_step_interval}s for fill...")
-            await asyncio.sleep(cfg.exit_step_interval)
-
-            status = await _arun(self.execution.get_order_status, order_id)
-
-            if status and status['status'] in ('filled', 'partially_filled'):
-                filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
-                tag = "FILLED" if status['status'] == 'filled' else f"PARTIAL ({status['filled_qty']}/{qty})"
-                self._vprint(f"    Step {step}: {tag} @ ${filled_price:.2f}")
-                return (result, filled_price)
-
-            # Not filled -- cancel
-            self._vprint(f"    Step {step}: not filled (status={status['status'] if status else 'unknown'}), cancelling...")
-            await _arun(self.execution.cancel_order, order_id)
-            await asyncio.sleep(1)
-
-            # Re-check in case fill happened during cancel
-            status = await _arun(self.execution.get_order_status, order_id)
-            if status and status['status'] in ('filled', 'partially_filled'):
-                filled_price = float(status['filled_avg_price']) if status.get('filled_avg_price') else limit_price
-                self._vprint(f"    Step {step}: filled during cancel @ ${filled_price:.2f}")
-                return (result, filled_price)
-
-            # Last step -- give up
-            if step >= cfg.exit_max_steps:
-                self._vprint(f"    All {cfg.exit_max_steps} steps exhausted for exit of {position.symbol}.")
-                return None
-
-            # Optionally re-fetch snapshot
-            if cfg.exit_refetch_snapshot:
-                snapshots = await _arun(self.data_manager.options_fetcher.get_option_snapshots, [option_symbol])
-                if option_symbol not in snapshots:
-                    self._vprint(f"    Snapshot unavailable after re-fetch. Aborting.")
-                    return None
-
-                snap = snapshots[option_symbol]
-                new_bid = float(snap.get('bid', 0) or 0)
-                new_ask = float(snap.get('ask', 0) or 0)
-
-                if new_ask <= 0:
-                    self._vprint(f"    Ask is zero after re-fetch. Aborting.")
-                    return None
-
-                new_mid = (new_bid + new_ask) / 2
-                new_spread = new_ask - new_bid
-
-                bid, ask, mid, spread = new_bid, new_ask, new_mid, new_spread
-                price_ceiling = min(ask, mid + (cfg.exit_max_steps * cfg.exit_step_pct * spread))
-
-                self._vprint(f"    Refreshed: bid=${bid:.2f}, ask=${ask:.2f}, "
-                      f"mid=${mid:.2f}, spread=${spread:.2f}, ceiling=${price_ceiling:.2f}")
-
-            # Compute next step price (step UP toward ask)
-            next_step = step + 1
-            if cfg.exit_start_price == "ask":
-                limit_price = ask  # Already at ask, stay there
-            else:
-                limit_price = mid + (next_step * cfg.exit_step_pct * spread)
-
-            limit_price = round(min(limit_price, price_ceiling), 2)
-
-        return None
+        return await self.stepped_executor.execute_exit(
+            position.option_symbol, abs(position.quantity),
+        )
 
     async def _check_assignments(self) -> List[Tuple]:
         """Detect assignments by comparing internal portfolio against Alpaca holdings.
@@ -1012,7 +695,7 @@ class TradingLoop:
             side = pos.side.value if hasattr(pos.side, 'value') else str(pos.side)
 
             # Options use OCC format (long symbol with digits), stocks are short tickers
-            if any(c.isdigit() for c in symbol) and len(symbol) > 10:
+            if is_option_symbol(symbol):
                 alpaca_option_symbols.add(symbol)
             else:
                 if side == 'long' or qty > 0:

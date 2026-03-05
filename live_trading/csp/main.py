@@ -102,11 +102,18 @@ def build_components(config: StrategyConfig):
     greeks_calc = GreeksCalculator()
     data_manager = DataManager(alpaca, config)
 
+    # Load equity screener config if named profile is set
+    eq_screener_config = None
+    if config.equity_screener:
+        from equity_screener.config import EquityScreenerConfig
+        eq_screener_config = EquityScreenerConfig.from_name(config.equity_screener)
+
     scanner = StrategyScanner(
         config=config,
         equity_fetcher=data_manager.equity_fetcher,
         options_fetcher=data_manager.options_fetcher,
         greeks_calc=greeks_calc,
+        equity_screener_config=eq_screener_config,
     )
 
     execution = ExecutionEngine(alpaca, config)

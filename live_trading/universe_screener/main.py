@@ -1,9 +1,9 @@
-"""Ticker screener — screens options universe for liquidity on upcoming Fridays.
+"""Universe screener — screens options universe for liquidity on upcoming Fridays.
 
 Usage:
-    python -m screener                     # screen full universe, save to screened_universe.json
-    python -m screener --sample 50         # screen 50 random tickers (fast test)
-    python -m screener -o my_output.json   # custom output path
+    python -m universe_screener                     # screen full universe, save to screened_universe.json
+    python -m universe_screener --sample 50         # screen 50 random tickers (fast test)
+    python -m universe_screener -o my_output.json   # custom output path
 """
 
 import argparse
@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from csp.clients import AlpacaClientManager
 from csp.data.options import OptionsDataFetcher
-from screener.universe import get_combined_universe
+from universe_screener.universe import get_combined_universe
 
 
 def get_next_fridays() -> tuple:
@@ -32,13 +32,14 @@ def get_next_fridays() -> tuple:
     return coming, coming + timedelta(days=7)
 
 
-def screen_tickers(tickers, options_fetcher, sample_size=None):
+def screen_tickers(tickers, options_fetcher, sample_size=None, verbose=False):
     """Screen tickers for call options expiring on both the next two Fridays.
 
     Args:
         tickers: full list of ticker symbols
         options_fetcher: OptionsDataFetcher instance
         sample_size: if set, randomly sample this many tickers (for fast testing)
+        verbose: if True, print progress and summary
 
     Returns:
         dict with pass_list, fail_list, and metadata
@@ -49,8 +50,9 @@ def screen_tickers(tickers, options_fetcher, sample_size=None):
     if sample_size and sample_size < len(tickers):
         candidates = random.sample(tickers, sample_size)
 
-    print(f"Target expirations: {coming_fri} and {next_fri}")
-    print(f"Screening {len(candidates)} tickers...\n")
+    if verbose:
+        print(f"Target expirations: {coming_fri} and {next_fri}")
+        print(f"Screening {len(candidates)} tickers...\n")
 
     pass_list = []
     fail_list = []
@@ -77,7 +79,7 @@ def screen_tickers(tickers, options_fetcher, sample_size=None):
         except Exception as e:
             fail_list.append({"ticker": ticker, "reason": [f"error: {e}"]})
 
-        if (i + 1) % 25 == 0:
+        if verbose and (i + 1) % 25 == 0:
             print(f"  Screened {i+1}/{len(candidates)}: "
                   f"{len(pass_list)} pass, {len(fail_list)} fail")
 
@@ -92,8 +94,14 @@ def screen_tickers(tickers, options_fetcher, sample_size=None):
         "fail": fail_list,
     }
 
-    print(f"\nDone: {len(pass_list)} pass / {len(fail_list)} fail "
-          f"(of {len(candidates)} screened)")
+    if verbose:
+        print(f"\nDone: {len(pass_list)} pass / {len(fail_list)} fail "
+              f"(of {len(candidates)} screened)")
+        print(f"\nNext Fridays: {coming_fri} and {next_fri}")
+        print(f"Passing tickers ({results['pass_count']}): {results['pass']}")
+        print(f"Failed tickers ({results['fail_count']}): "
+              f"{[f['ticker'] for f in results['fail']]}")
+
     return results
 
 
@@ -116,12 +124,12 @@ def main():
     load_dotenv(override=True)
 
     print("Building ticker universe...")
-    tickers = get_combined_universe()
+    tickers = get_combined_universe(verbose=True)
 
     print("\nConnecting to Alpaca...")
     alpaca = AlpacaClientManager(paper=True)
     options_fetcher = OptionsDataFetcher(alpaca)
     print("Connected.\n")
 
-    results = screen_tickers(tickers, options_fetcher, sample_size=args.sample)
+    results = screen_tickers(tickers, options_fetcher, sample_size=args.sample, verbose=True)
     save_results(results, args.output)

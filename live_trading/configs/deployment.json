@@ -1,0 +1,97 @@
+{
+  "$schema": "deployment-config-v1",
+  "description": "Top-level deployment configuration for the trading system. Schema only — orchestrator not yet implemented.",
+
+  "accounts": {
+    "paper_nissan": {
+      "provider": "alpaca",
+      "paper": true,
+      "env_key_prefix": "ALPACA",
+      "description": "Nissan paper trading account"
+    }
+  },
+
+  "pipelines": {
+    "nissan_csp": {
+      "account": "paper_nissan",
+      "stages": [
+        {
+          "name": "ticker_screener",
+          "module": "screener",
+          "schedule": "0 20 * * 0",
+          "args": [],
+          "output": "screened_universe.json",
+          "description": "Screen full universe for options liquidity (weekly, Sunday evening)"
+        },
+        {
+          "name": "equity_screener",
+          "module": "equity_screener",
+          "schedule": "15 9 * * 1-5",
+          "args": ["--config", "csp_bullish"],
+          "output": "equity_screened_csp_bullish.json",
+          "depends_on": ["ticker_screener"],
+          "description": "Run technical + event filter on screened universe (daily pre-market)"
+        },
+        {
+          "name": "csp_strategy",
+          "module": "csp",
+          "schedule": "30 9 * * 1-5",
+          "depends_on": ["equity_screener"],
+          "env": {
+            "STORAGE_BACKEND": "gcs",
+            "GCS_BUCKET_NAME": "nissan-options-data",
+            "GCS_PREFIX": "paper",
+            "PRINT_MODE": "summary"
+          },
+          "description": "CSP strategy trading loop"
+        }
+      ],
+      "storage": {
+        "backend": "gcs",
+        "bucket": "nissan-options-data",
+        "prefix": "paper"
+      }
+    },
+
+    "nissan_cc": {
+      "account": "paper_nissan",
+      "stages": [
+        {
+          "name": "equity_screener",
+          "module": "equity_screener",
+          "schedule": "15 9 * * 1-5",
+          "args": ["--config", "cc_neutral"],
+          "output": "equity_screened_cc_neutral.json",
+          "depends_on": [],
+          "description": "Equity screener for covered call strategy"
+        },
+        {
+          "name": "cc_strategy",
+          "module": "covered_call",
+          "schedule": "30 9 * * 1-5",
+          "depends_on": ["equity_screener"],
+          "description": "Covered call management loop"
+        }
+      ]
+    },
+
+    "monitor_only": {
+      "account": "paper_nissan",
+      "stages": [
+        {
+          "name": "risk_monitor",
+          "module": "risk",
+          "schedule": "30 9 * * 1-5",
+          "depends_on": [],
+          "description": "Monitor existing positions, execute exits only (no new entries)"
+        }
+      ]
+    }
+  },
+
+  "defaults": {
+    "region": "us-east1",
+    "project_id": "nissan-trading",
+    "timezone": "US/Eastern"
+  }
+}

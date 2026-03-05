@@ -55,7 +55,7 @@ def get_nasdaq100_tickers() -> list:
     return sorted(tickers)
 
 
-def get_combined_universe() -> list:
+def get_combined_universe(verbose=False) -> list:
     """Build deduplicated universe from S&P 500 + DJIA + NASDAQ-100."""
     sp500 = get_sp500_tickers()
     djia = get_djia_tickers()
@@ -63,6 +63,7 @@ def get_combined_universe() -> list:
 
     combined = sorted(set(sp500) | set(djia) | set(nasdaq))
 
-    print(f"Universe: S&P={len(sp500)} | DJIA={len(djia)} | "
-          f"NASDAQ-100={len(nasdaq)} | Combined={len(combined)}")
+    if verbose:
+        print(f"Universe: S&P={len(sp500)} | DJIA={len(djia)} | "
+              f"NASDAQ-100={len(nasdaq)} | Combined={len(combined)}")
     return combined
